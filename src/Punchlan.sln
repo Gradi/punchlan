@@ -1,0 +1,33 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "LibPunchLan", "LibPunchLan\LibPunchLan.fsproj", "{62200B15-AE43-4B96-9F33-7262E654B9B7}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Tests", "Tests", "{91D72748-0961-4EE5-B59A-16145C6D9348}"
+EndProject
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "TestLibPunchLan", "Tests\TestLibPunchLan\TestLibPunchLan.fsproj", "{C1194BB9-239D-415A-B98D-598DB35506FA}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Release|x64 = Release|x64
+		Debug|x64 = Debug|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{62200B15-AE43-4B96-9F33-7262E654B9B7}.Release|x64.ActiveCfg = Release|x64
+		{62200B15-AE43-4B96-9F33-7262E654B9B7}.Release|x64.Build.0 = Release|x64
+		{62200B15-AE43-4B96-9F33-7262E654B9B7}.Debug|x64.ActiveCfg = Debug|x64
+		{62200B15-AE43-4B96-9F33-7262E654B9B7}.Debug|x64.Build.0 = Debug|x64
+		{C1194BB9-239D-415A-B98D-598DB35506FA}.Release|x64.ActiveCfg = Release|x64
+		{C1194BB9-239D-415A-B98D-598DB35506FA}.Release|x64.Build.0 = Release|x64
+		{C1194BB9-239D-415A-B98D-598DB35506FA}.Debug|x64.ActiveCfg = Debug|x64
+		{C1194BB9-239D-415A-B98D-598DB35506FA}.Debug|x64.Build.0 = Debug|x64
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{C1194BB9-239D-415A-B98D-598DB35506FA} = {91D72748-0961-4EE5-B59A-16145C6D9348}
+	EndGlobalSection
+EndGlobal

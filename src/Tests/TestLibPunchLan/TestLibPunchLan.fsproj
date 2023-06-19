@@ -1,0 +1,18 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Tests\Lexing\TestNumberMod.fs" />
+    <Compile Include="Tests\Lexing\TestLexer.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\LibPunchLan\LibPunchLan.fsproj" />
+  </ItemGroup>
+  
+  <Import Project="../Tests.props" />
+
+</Project>

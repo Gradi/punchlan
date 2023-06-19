@@ -1,0 +1,11 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Addons.fs" />
+    <Compile Include="Lexing\Types.fs" />
+    <Compile Include="Lexing\NumberMod.fs" />
+    <Compile Include="Lexing\Lexer.fs" />
+  </ItemGroup>
+</Project>
