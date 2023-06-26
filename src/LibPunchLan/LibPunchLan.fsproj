@@ -4,8 +4,11 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Addons.fs" />
+    <Compile Include="ResultM.fs" />
     <Compile Include="Lexing\Types.fs" />
     <Compile Include="Lexing\NumberMod.fs" />
-    <Compile Include="Lexing\Lexer.fs" />
+     <Compile Include="Lexing\Lexer.fs" />
+    <Compile Include="Parsing\Types.fs" />
+    <Compile Include="Parsing\LL1.fs" />
   </ItemGroup>
 </Project>

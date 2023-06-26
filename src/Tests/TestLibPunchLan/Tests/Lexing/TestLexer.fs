@@ -11,12 +11,12 @@ module TestReader =
 
     let runReader str =
         seq {
-            let reader = Reader.FromString str
-            let mutable char = reader.Next ()
+            use reader = charReaderFromStr str
+            let mutable char = reader.TryNext ()
 
             while Option.isSome char do
                 yield char.Value
-                char <- reader.Next ()
+                char <- reader.TryNext ()
         } |> List.ofSeq
 
     let ch r c value = { Char.Char = value; Row = r; Col = c }
@@ -42,7 +42,7 @@ module TestReader =
 module TestLexer =
 
     let runLexer str =
-        let reader = Reader.FromString str
+        use reader = charReaderFromStr str
         let tokens =
             tokenize reader
             |> List.ofSeq

@@ -2,38 +2,8 @@
 
 open System.Text
 open LibPunchLan.Lexing
-open System.IO
-open System.Collections.Generic
+open LibPunchLan.ResultM
 open LibPunchLan.Addons
-
-type Reader(textReader: TextReader) =
-    let returnedSymbols = Stack<Char> ()
-    let mutable rowCount: int = 0
-    let mutable colCount: int = 0
-
-    member _.Return char = returnedSymbols.Push char
-
-    member _.Next () =
-        match returnedSymbols.TryPop () with
-        | true, char -> Some char
-        | false, _ ->
-            match textReader.Read () with
-            | -1 -> None
-            | value ->
-                let char = char value
-                let result = { Char.Char = char; Row = rowCount; Col = colCount; }
-                colCount <- colCount + 1
-
-                if char = '\n' then
-                    rowCount <- rowCount + 1
-                    colCount <- 0
-
-                Some result
-
-    static member FromString str =
-        let strReader = new StringReader(str)
-        Reader(strReader)
-
 
 let stringToKeywordOrIdentifier str =
     match str with
@@ -86,7 +56,7 @@ let stringToKeywordOrIdentifier str =
 
 type private LexerState = Char option -> Result<LexemeContainer option, string>
 
-type private Tokenizer(reader: Reader) as this =
+type private Tokenizer(reader: Char SeqReader) as this =
 
     let mutable state: LexerState = this.InitialState
     let mutable charBuffer: Char list = []
@@ -102,8 +72,6 @@ type private Tokenizer(reader: Reader) as this =
     let failUnknownChar char =
         resultf $"Unknown character '%c{char.Char}' at (%d{char.Row}, %d{char.Col})."
 
-    let failUnexpectedEOF = resultf "Unexpected EOF."
-
     let clearCharBuffer () = charBuffer <- []
 
     let charBufferToStr () =
@@ -113,7 +81,7 @@ type private Tokenizer(reader: Reader) as this =
 
     member private _.InitialState char =
         match char with
-        | None -> failUnexpectedEOF
+        | None -> none
         | Some char ->
             match char.Char with
             | '(' -> ok char char Lexeme.LParen
@@ -246,11 +214,11 @@ type private Tokenizer(reader: Reader) as this =
 
     member _. GetLexemes () : Result<LexemeContainer, string> seq =
         seq {
-            let mutable inputChar = reader.Next ()
+            let mutable inputChar = reader.TryNext ()
 
             while Option.isSome inputChar do
                 yield state inputChar
-                inputChar <- reader.Next ()
+                inputChar <- reader.TryNext ()
 
             yield state None
         } |> Seq.choose (fun result ->
@@ -259,6 +227,27 @@ type private Tokenizer(reader: Reader) as this =
             | Ok None -> None
             | Ok (Some lexeme) -> Some (Ok lexeme))
 
+
+let charReaderFromTextReader (reader: System.IO.TextReader) =
+    let seq = seq {
+        let mutable input = reader.Read ()
+        let mutable rowCount  = 0
+        let mutable colCount = 0
+
+        while input <> -1 do
+            let ch = { Char.Char = char input; Row = rowCount; Col = colCount }
+            colCount <- colCount + 1
+
+            if ch.Char = '\n' then
+                rowCount <- rowCount + 1
+                colCount <- 0
+            yield ch
+            input <- reader.Read ()
+    }
+    new SeqReader<Char> (seq)
+
+let charReaderFromStr str =
+    charReaderFromTextReader <| new System.IO.StringReader(str)
 
 let tokenize reader =
     let tokenizer = Tokenizer reader
