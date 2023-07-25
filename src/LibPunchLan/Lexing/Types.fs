@@ -4,21 +4,28 @@ type Lexeme =
     | Keyword of Keyword
     | Identifier of string
     | Number of Number
+    | String of string
+    | Char of char
     | LParen      // (
     | RParen      // )
     | LSBracket   // [
     | RSBracket   // ]
     | LABracket   // <
     | RABracket   // >
+    | LCBracket   // {
+    | RCBracket   // }
     | Operator of string
     | Colon
     | Comma
+    | Dot
+    | DoubleDot
     | Newline
     | Equal
     | DEqual
     | NotEqual
     | LessThanOrEqual
-    | GreaterThanorEqual
+    | GreaterThanOrEqual
+    | EndOfFile
 
 and Keyword =
     | Open | As
@@ -26,14 +33,14 @@ and Keyword =
     | Struct | EndStruct
     | Union | EndUnion
     | Enum | EndEnum
-    | If | Else | Fi
-    | Switch | Case | Break | Default | EndSwitch
-    | While | EndWhile
-    | For  | In | EndFor
+    | If | Then | ElseIf | Else | Fi
+    | While | Do | EndWhile
+    | For | In | EndFor
     | Private
     | Return
     | Var
     | Extern
+    | Defer | EndDefer
 
     | Int8 | Uint8
     | Int16 | Uint16
@@ -46,6 +53,8 @@ and Keyword =
     | Void
     | Pointer
     | Const
+
+    | True | False
 
     | And | Or | Not
     | Xor
@@ -66,15 +75,3 @@ and HexInt =
     | A | B | C | D | E | F
 
 and BitInt = Zero | One
-
-type Char =
-    { Char: char
-      Row: int
-      Col: int }
-
-type LexemeContainer =
-    { Lexeme: Lexeme
-      RowStart: int
-      RowEnd: int
-      ColStart: int
-      ColEnd: int }

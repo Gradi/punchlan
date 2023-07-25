@@ -1,0 +1,6 @@
+﻿func doAction (x : int32, y : int32)
+var result : int32 = ((x) + (y))
+puts (("Result is "))
+putInt ((result))
+puts ((". Thats all"))
+endfunc

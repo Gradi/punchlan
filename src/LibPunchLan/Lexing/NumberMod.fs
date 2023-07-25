@@ -1,5 +1,6 @@
 ﻿module LibPunchLan.Lexing.NumberMod
 
+open System.Text
 open LibPunchLan.Lexing
 
 let private charToHex char =
@@ -82,3 +83,52 @@ let tryParseNumber (string: string) =
             match System.Double.TryParse (string, System.Globalization.CultureInfo.InvariantCulture) with
             | true, number -> Some <| Number.Double number
             | false, _ -> None
+
+let decIntToStr (d: DecInt) =
+    match d with
+    | DecInt.Zero -> "0"
+    | DecInt.One -> "1"
+    | DecInt.Two -> "2"
+    | DecInt.Three -> "3"
+    | DecInt.Four -> "4"
+    | DecInt.Five -> "5"
+    | DecInt.Six -> "6"
+    | DecInt.Seven -> "7"
+    | DecInt.Eight -> "8"
+    | DecInt.Nine -> "9"
+
+let hexIntToStr (h: HexInt) =
+    match h with
+    | DecInt decInt -> decIntToStr decInt
+    | HexInt.A -> "a"
+    | HexInt.B -> "b"
+    | HexInt.C -> "c"
+    | HexInt.D -> "d"
+    | HexInt.E -> "e"
+    | HexInt.F -> "f"
+
+let bitIntToStr (b: BitInt) =
+    match b with
+    | BitInt.Zero -> "0"
+    | BitInt.One -> "1"
+
+let rec numToStr (number: Number): string =
+    let sb = StringBuilder ()
+    match number with
+    | Integer decs ->
+        decs
+        |> Array.iter (fun d -> sb.Append (decIntToStr d) |> ignore)
+    | HexInteger hexs ->
+        sb.Append "0x" |> ignore
+        hexs
+        |> Array.iter (fun h -> sb.Append (hexIntToStr h) |> ignore)
+    | BinaryInteger bins ->
+        sb.Append "0b" |> ignore
+        bins
+        |> Array.iter (fun b -> sb.Append (bitIntToStr b) |> ignore)
+    | Double dbl -> sb.Append (dbl.ToString System.Globalization.CultureInfo.InvariantCulture) |> ignore
+    | Negative num ->
+        sb.Append '-' |> ignore
+        sb.Append (numToStr num) |> ignore
+
+    sb.ToString ()

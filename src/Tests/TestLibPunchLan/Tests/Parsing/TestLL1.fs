@@ -1,44 +1,53 @@
-﻿namespace TestLibPunchLan.Tests.Parsing
+﻿module TestLibPunchLan.Tests.Parsing.TestLL1
 
-open FsUnit
-open LibPunchLan.Addons
-open LibPunchLan.Lexing
+open System.Text
+open LibPunchLan
 open LibPunchLan.Parsing
-open NUnit
+open System.Reflection
+open System.Text.RegularExpressions
+open System.IO
+open FsUnit
 open NUnit.Framework
-open LibPunchLan.Parsing.LL1
-open LibPunchLan.Lexing.Lexer
+open NUnit
+open LibPunchLan.Parsing
 
-[<TestFixture>]
-module TestLL1 =
+type CodeSample =
+    { InputName: string
+      Input: string
+      Expected: string }
 
-    let parseSource str (f: SeqReader<Result<LexemeContainer, string>> -> Result<'b, string>): 'b =
-        use reader = charReaderFromStr str
-        let lexemes = tokenize reader
-        use lexemeReader = new SeqReader<Result<LexemeContainer, string>>(lexemes)
-        match f lexemeReader with
-        | Error msg ->
-            Assert.Fail (sprintf $"Error on input source:\n%s{str}\n%s{msg}")
-            failwith ""
-        | Ok result -> result
+let codeSamples =
+    let assembly = Assembly.GetAssembly typeof<CodeSample>.DeclaringType
+    let inputSamples =
+        assembly.GetManifestResourceNames ()
+        |> Array.filter (fun name -> Regex.IsMatch (name, "Sample_[0-9]+\.in"))
 
-    [<Test>]
-    let ``Can parse open directives`` () =
-        parseSource "open filename\n" (fun l -> parseOpenDirective l)
-        |> should equal [ { OpenDirective.Path = "filename"; Alias = None } ]
+    inputSamples
+    |> Array.map (fun inputSampleName ->
+        let outputSampleName = inputSampleName.Replace (".in", ".out")
 
-        parseSource "open filename\nopen secondFile\n"
-                    (fun l -> parseOpenDirective l)
-        |> should equal [ { Path = "filename"; Alias = None }
-                          { Path = "secondFile"; Alias = None } ]
+        use inputStream = assembly.GetManifestResourceStream inputSampleName
+        if inputStream = null then failwithf $"Can't read '%s{inputSampleName}'."
+        use textReader = new StreamReader (inputStream, Encoding.UTF8)
+        let inputSample = textReader.ReadToEnd ()
 
-        parseSource "open lib/std/io as io\nopen lib/rnd\nopen mylib as library\n\n\n"
-                    (fun l -> parseOpenDirective l)
-        |> should equal [ { Path = "lib/std/io"; Alias = Some "io" }
-                          { Path = "lib/rnd"; Alias = None }
-                          { Path = "mylib"; Alias = Some "library" } ]
+        use outStream = assembly.GetManifestResourceStream outputSampleName
+        if outStream = null then failwithf $"Can't read '$s{outputSampleName}'."
+        use textReader = new StreamReader (outStream, Encoding.UTF8)
+        let outputSample = textReader.ReadToEnd().Replace("\r", "")
 
-    [<Test>]
-    let ``Empty input produces empty directive list`` () =
-        parseSource "" (fun l -> parseOpenDirective l)
-        |> should equal ([] : OpenDirective list)
+        { InputName = inputSampleName; Input = inputSample; Expected = outputSample })
+
+
+[<Test>]
+let ``Run all samples`` () =
+    for codeSample in codeSamples do
+        match LL1.parseSourceFromStr codeSample.Input with
+        | Error err -> Assert.Fail (sprintf $"Error parsing '%s{codeSample.InputName}': %s{err}")
+        | Ok source ->
+            let actual = StringifySyntaxTree.stringify source
+            if actual <> codeSample.Expected then
+                fprintfn TestContext.Out $"Input sample: '%s{codeSample.InputName}'"
+                fprintfn TestContext.Out $"Expected:\n%s{codeSample.Expected}\n\n\n"
+                fprintfn TestContext.Out $"Actual:\n%s{actual}\n\n\n"
+                actual |> should equal codeSample.Expected

@@ -12,12 +12,6 @@ type SeqReader<'a> (seq: 'a seq) as this =
         this.CheckDisposed ()
         stack.Push item
 
-    member _.TryReturn item =
-        this.CheckDisposed ()
-        match item with
-        | Some item -> this.Return item
-        | None -> ()
-
     member _.TryNext () =
         this.CheckDisposed ()
 
@@ -29,14 +23,16 @@ type SeqReader<'a> (seq: 'a seq) as this =
             else
                 None
 
-    member _.TryPeek () =
+    member _.Next () =
         this.CheckDisposed ()
-
         match this.TryNext () with
-        | Some item ->
-            this.Return item
-            Some item
-        | None -> None
+        | Some item -> item
+        | None -> failwith "End of sequence or empty sequence."
+
+    member _.Peek () =
+        let item = this.Next()
+        this.Return item
+        item
 
     member private _.CheckDisposed () =
         if isDisposed then raise (ObjectDisposedException (nameof SeqReader))
