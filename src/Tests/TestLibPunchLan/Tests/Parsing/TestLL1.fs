@@ -42,7 +42,7 @@ let codeSamples =
 [<Test>]
 let ``Run all samples`` () =
     for codeSample in codeSamples do
-        match LL1.parseSourceFromStr codeSample.Input with
+        match LL1.parseSourceFromString codeSample.Input with
         | Error err -> Assert.Fail (sprintf $"Error parsing '%s{codeSample.InputName}': %s{err}")
         | Ok source ->
             let actual = StringifySyntaxTree.stringify source

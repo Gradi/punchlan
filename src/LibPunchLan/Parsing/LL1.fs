@@ -1,691 +1,645 @@
 ﻿module LibPunchLan.Parsing.LL1
 
-open System.Runtime.CompilerServices
-open System.Runtime.InteropServices
 open LibPunchLan.Addons
-open LibPunchLan.ResultM
 open LibPunchLan.Lexing
+open LibPunchLan.Parsing.LL1M
+open LibPunchLan.ResultM
 
-type private Reader = Result<Lexeme, string> SeqReader
+let rec parseOpenDirectives () = parser {
+    let rec parsePath () = parser {
+        let! path = readIdentifier
 
-[<AbstractClass; Sealed>]
-type private Help() =
+        match! tryConsume (Lexeme.Operator "/") with
+        | true ->
+            let! rest = parsePath ()
+            return sprintf $"%s{path}/%s{rest}"
+        | false -> return path
+    }
 
-    static member Error (lexeme: Lexeme,
-                           msg: string,
-                           [<CallerMemberName; DefaultParameterValue(""); Optional>] memberName: string) =
-        Error (sprintf $"Parse error at \"%s{memberName}\", current lexeme: \"%A{lexeme}\" Msg: \"%s{msg}\".")
-
-    static member ConsumeLexeme (lexeme: Lexeme,
-                                 reader: Reader,
-                                 [<CallerMemberName; DefaultParameterValue(""); Optional>] memberName: string) =
-        result {
-            match! reader.Next () with
-            | actual when actual = lexeme -> return ()
-            | actual -> return! resultf $"%s{memberName}: Expected a '%A{lexeme}' lexeme, but found '%A{actual}'."
+    do! skipNewlines ()
+    match! tryConsume (Lexeme.Keyword Keyword.Open) with
+    | true ->
+        let! path = parsePath ()
+        let! alias = parser {
+            match! tryConsume (Lexeme.Keyword Keyword.As) with
+            | true ->
+                let! id = readIdentifier
+                return Some id
+            | false -> return None
         }
 
-    static member UnexpectedLexeme (lexeme: Lexeme,
-                                    [<CallerMemberName; DefaultParameterValue(""); Optional>] memberName: string) =
-        Help.Error (lexeme, "Unexpected lexeme", memberName)
+        do! consume Lexeme.Newline
+        let! rest = parseOpenDirectives ()
+        return { OpenDirective.Path = path; Alias = alias } :: rest
 
-let rec private skipNewlines (reader: Reader) = result {
-    match! reader.Next () with
-    | Newline -> do! skipNewlines reader
-    | input ->
-        reader.Return (Ok input)
-        return ()
+    | false -> return []
 }
 
-let private parseDotString (reader: Reader) : Result<DotString, string> = result {
-    let rec doParse () = result {
-        match! reader.Next () with
-        | Identifier id ->
-            let! rest = doParse ()
-            return id :: rest
-        | Dot ->
-            return! doParse ()
+let parseDotString () = parser {
+    match! next with
+    | { Lexeme = Lexeme.Identifier id1 } ->
+        match! next with
+        | { Lexeme = Lexeme.Dot } ->
+            let! id2 = readIdentifier
+            return { DotString.Name = id2; Alias = Some id1 }
         | input ->
-            reader.Return (Ok input)
-            return []
-    }
-
-    match! doParse () with
-    | [] -> return! resultf "Failed to parse string of 'id0.id1.id2...idN'."
-    | xs -> return xs
+            do! returnLex input
+            return { DotString.Name = id1; Alias = None }
+    | input ->
+        do! returnLex input
+        return! parseError input "Expected identifier"
 }
 
-module private rec TypeIds =
-    let parseTypeId (reader: Reader) = result {
-        match! reader.Next () with
-        | Keyword Keyword.Int8  -> return TypeId.Int8
-        | Keyword Keyword.Uint8 -> return TypeId.Uint8
-        | Keyword Keyword.Int16 -> return TypeId.Int16
-        | Keyword Keyword.Uint16 -> return TypeId.Uint16
-        | Keyword Keyword.Int32 -> return TypeId.Int32
-        | Keyword Keyword.Uint32 -> return TypeId.Uint32
-        | Keyword Keyword.Double -> return TypeId.Double
-        | Keyword Keyword.Float -> return TypeId.Float
-        | Keyword Keyword.Char -> return TypeId.Char
-        | Keyword Keyword.Bool -> return TypeId.Bool
-        | Keyword Keyword.Sizet -> return TypeId.Sizet
-        | Keyword Keyword.Void -> return TypeId.Void
-        | Keyword Pointer ->
-            do! Help.ConsumeLexeme (Lexeme.LABracket, reader)
-            let! pointedType = parseTypeId reader
-            do! Help.ConsumeLexeme (Lexeme.RABracket, reader)
-            return TypeId.Pointer pointedType
-
-        | Keyword Keyword.Const  ->
-            let! typeId = parseTypeId reader
-            return TypeId.Const typeId
-
-        | Identifier id  ->
-            reader.Return (Ok (Identifier id))
-            let! dotString = parseDotString reader
-            let! typeArguments = parseTypeArguments reader
-            return TypeId.Named (dotString, typeArguments)
-
-        | input -> return! Help.Error (input, "Unexpected lexeme")
-    }
-
-    let parseTypeArguments (reader: Reader) =
-        let rec doParse () = result {
-            let! typeId = parseTypeId reader
-            match! reader.Next () with
-            | Comma ->
-                let! rest = doParse ()
-                return typeId :: rest
-            | input ->
-                reader.Return (Ok input)
-                return [ typeId ]
-        }
-
-        result {
-            match! reader.Next () with
-            | LABracket ->
-                let! typeArguments = doParse ()
-                do! Help.ConsumeLexeme (RABracket, reader)
-                return typeArguments
-            | input ->
-                reader.Return (Ok input)
-                return []
-        }
-
-    let parseTypeArgumentNames (reader: Reader) =
-        let rec doParse () = result {
-            match! reader.Next () with
-            | Identifier id ->
-
-                match! reader.Next () with
-                | Comma ->
-                    let! rest = doParse ()
-                    return id :: rest
-                | input ->
-                    reader.Return (Ok input)
-                    return [ id ]
-            | input -> return! Help.UnexpectedLexeme input
-        }
-
-        result {
-            match! reader.Next () with
-            | LABracket ->
-                let! argsNames = doParse ()
-                do! Help.ConsumeLexeme (RABracket, reader)
-                return argsNames
-            | input ->
-                reader.Return (Ok input)
-                return []
-        }
+let rec parseTypeId () = parser {
+    match! next with
+    | { Lexeme = Lexeme.Keyword Keyword.Int8 } -> return TypeId.Int8
+    | { Lexeme = Lexeme.Keyword Keyword.Uint8 } -> return TypeId.Uint8
+    | { Lexeme = Lexeme.Keyword Keyword.Int16 } -> return TypeId.Int16
+    | { Lexeme = Lexeme.Keyword Keyword.Uint16 } -> return TypeId.Uint16
+    | { Lexeme = Lexeme.Keyword Keyword.Int32 } -> return TypeId.Int32
+    | { Lexeme = Lexeme.Keyword Keyword.Uint32 } -> return TypeId.Uint32
+    | { Lexeme = Lexeme.Keyword Keyword.Int64 } -> return TypeId.Int64
+    | { Lexeme = Lexeme.Keyword Keyword.Uint64 } -> return TypeId.Uint64
+    | { Lexeme = Lexeme.Keyword Keyword.Float } -> return TypeId.Float
+    | { Lexeme = Lexeme.Keyword Keyword.Double } -> return TypeId.Double
+    | { Lexeme = Lexeme.Keyword Keyword.Bool } -> return TypeId.Bool
+    | { Lexeme = Lexeme.Keyword Keyword.Char } -> return TypeId.Char
+    | { Lexeme = Lexeme.Keyword Keyword.Void } -> return TypeId.Void
+    | { Lexeme = Lexeme.Keyword Keyword.Pointer } ->
+        do! consume Lexeme.LABracket
+        let! typ = parseTypeId ()
+        do! consume Lexeme.RABracket
+        return TypeId.Pointer typ
+    | { Lexeme = Lexeme.Keyword Keyword.Const } ->
+        let! typ  = parseTypeId ()
+        return TypeId.Const typ
+    | { Lexeme = Lexeme.Identifier _ } as input ->
+        do! returnLex input
+        let! dotStr = parseDotString ()
+        return TypeId.Named dotStr
+    | input ->
+        do! returnLex input
+        return! parseError input "Can't parse type id from this"
+}
 
 module private rec Expressions =
 
-    let parseExpression (reader: Reader) = result {
-        let! expr = pExpr1 reader
-
-        match! reader.Next () with
-        | Operator "<" ->
-            let! rexpr = pExpr1 reader
-            return Expression.BinaryExpression (BinaryExpression.Less (expr, rexpr))
-        | LessThanOrEqual ->
-            let! rexpr = pExpr1 reader
-            return Expression.BinaryExpression (BinaryExpression.LessOrEqual (expr, rexpr))
-        | DEqual ->
-            let! rexpr = pExpr1 reader
-            return Expression.BinaryExpression (BinaryExpression.Equal (expr, rexpr))
-        | Operator ">" ->
-            let! rexpr = pExpr1 reader
-            return Expression.BinaryExpression (BinaryExpression.Greater (expr, rexpr))
-        | GreaterThanOrEqual ->
-            let! rexpr = pExpr1 reader
-            return Expression.BinaryExpression (BinaryExpression.GreaterOrEqual (expr, rexpr))
-        | input ->
-            reader.Return (Ok input)
-            return expr
-    }
-
-    let pExpr1 (reader: Reader) = result {
-        let rec doParse expr = result {
-            match! reader.Next () with
-            | Operator "+" ->
-                let! rexpr = pExpr2 reader
-                return! doParse (Expression.BinaryExpression (BinaryExpression.Plus (expr, rexpr)))
-            | Operator "-" ->
-                let! rexpr = pExpr2 reader
-                return! doParse (Expression.BinaryExpression (BinaryExpression.Minus (expr, rexpr)))
+    let parseExpression () = parser {
+        let rec doParse left = parser {
+            match! next with
+            | { Lexeme = Lexeme.Keyword Keyword.Or } ->
+                let! right = parseExpr1 ()
+                return! doParse (Expression.BinaryExpression <| BinaryExpression.Or (left, right))
+            | { Lexeme = Lexeme.Keyword Keyword.And } ->
+                let! right = parseExpr1 ()
+                return! doParse (Expression.BinaryExpression <| BinaryExpression.And (left, right))
             | input ->
-                reader.Return (Ok input)
-                return expr
+                do! returnLex input
+                return left
         }
-        let! expr = pExpr2 reader
-        return! doParse expr
+
+        let! left = parseExpr1 ()
+        return! doParse left
     }
 
-    let pExpr2 (reader: Reader) = result {
-        let rec doParse expr = result {
-            match! reader.Next () with
-            | Operator "*" ->
-                let! rexpr = pExpr3 reader
-                return! doParse (Expression.BinaryExpression (BinaryExpression.Multiply (expr, rexpr)))
-            | Operator "/" ->
-                let! rexpr = pExpr3 reader
-                return! doParse (Expression.BinaryExpression (BinaryExpression.Division (expr, rexpr)))
+    let parseExpr1 () = parser {
+        let rec doParse left = parser {
+            match! next with
+            | { Lexeme = Lexeme.LABracket } ->
+                let! right = parseExpr2 ()
+                return! doParse (Expression.BinaryExpression <| BinaryExpression.Less (left, right))
+            | { Lexeme = Lexeme.Operator "<=" } ->
+                let! right = parseExpr2 ()
+                return! doParse (Expression.BinaryExpression <| BinaryExpression.LessOrEqual (left, right))
+            | { Lexeme = Lexeme.Operator "==" } ->
+                let! right = parseExpr2 ()
+                return! doParse (Expression.BinaryExpression <| BinaryExpression.Equal (left, right))
+            | { Lexeme = Lexeme.RABracket } ->
+                let! right = parseExpr2 ()
+                return! doParse (Expression.BinaryExpression <| BinaryExpression.Greater (left, right))
+            | { Lexeme = Lexeme.Operator ">=" } ->
+                let! right = parseExpr2 ()
+                return! doParse (Expression.BinaryExpression <| BinaryExpression.GreaterOrEqual (left, right))
+            | { Lexeme = Lexeme.Operator "!=" } ->
+                let! right = parseExpr2 ()
+                return! doParse (Expression.BinaryExpression <| BinaryExpression.NotEqual (left, right))
             | input ->
-                reader.Return (Ok input)
-                return expr
+                do! returnLex input
+                return left
         }
-        let! expr = pExpr3 reader
-        return! doParse expr
+
+        let! left = parseExpr2 ()
+        return! doParse left
     }
 
-    let pExpr3 (reader: Reader) = result {
-        let! expr = pExpr4 reader
-
-        match! reader.Next () with
-        | Operator "|" ->
-            let! rexpr = pExpr4 reader
-            return Expression.BinaryExpression (BinaryExpression.Or (expr, rexpr))
-        | Operator "&" ->
-            let! rexpr = pExpr4 reader
-            return Expression.BinaryExpression (BinaryExpression.And (expr, rexpr))
-        | Keyword Keyword.Xor ->
-            let! rexpr = pExpr4 reader
-            return Expression.BinaryExpression (BinaryExpression.Xor (expr, rexpr))
-        | input ->
-            reader.Return (Ok input)
-            return expr
-    }
-
-    let pExpr4 (reader: Reader) = result {
-        let rec doParse expr = result {
-            match! reader.Next () with
-            | Dot ->
-
-                match! reader.Next () with
-                | Identifier id ->
-                    let! typeArgs = TypeIds.parseTypeArguments reader
-
-                    match! reader.Next () with
-                    | LParen ->
-                        reader.Return (Ok LParen)
-                        let! funcArgs = parseFunctionArgs reader
-                        return! doParse (Expression.MemberCall(expr, id, typeArgs, funcArgs))
-                    | LSBracket ->
-                        let array = Expression.MemberAccess (expr, id)
-                        let! arrayIndex = pExpr5 reader
-                        do! Help.ConsumeLexeme (RSBracket, reader)
-                        return! doParse (Expression.ArrayAccess(array, arrayIndex))
-                    | LCBracket ->
-                        let! fields = parseFieldsInits reader
-                        do! Help.ConsumeLexeme (RCBracket, reader)
-
-                        match expr with
-                        | Variable id0 -> return Expression.StructCreation ([id0; id], typeArgs, fields)
-                        | expr -> return! resultf $"Invalid syntax: Struct creation with the left node being %s{expr.GetType().ToString()}."
-
-                    | input ->
-                        reader.Return (Ok input)
-                        return! doParse (Expression.MemberAccess (expr, id))
-                | input -> return! Help.UnexpectedLexeme input
-
+    let parseExpr2 () = parser {
+        let rec doParse left = parser {
+            match! next with
+            | { Lexeme = Lexeme.Keyword Keyword.Xor } ->
+                let! right = parseExpr3 ()
+                return! doParse (Expression.BinaryExpression <| BinaryExpression.Xor (left, right))
+            | { Lexeme = Lexeme.Operator ">>" } ->
+                let! right = parseExpr3 ()
+                return! doParse (Expression.BinaryExpression <| BinaryExpression.RShift (left, right))
+            | { Lexeme = Lexeme.Operator "<<" } ->
+                let! right = parseExpr3 ()
+                return! doParse (Expression.BinaryExpression <| BinaryExpression.LShift (left, right))
             | input ->
-                reader.Return (Ok input)
-                return expr
+                do! returnLex input
+                return left
         }
-        let! expr = pExpr5 reader
-        return! doParse expr
+
+        let! left = parseExpr3 ()
+        return! doParse left
     }
 
-    let pExpr5 (reader: Reader) = result {
-        match! reader.Next () with
-        | Lexeme.String str -> return Expression.Constant (Value.String str)
-        | Lexeme.Char ch -> return Expression.Constant (Value.Char ch)
-        | Lexeme.Number num -> return Expression.Constant (Value.Number num)
-        | Keyword Keyword.True -> return Expression.Constant (Value.Boolean true)
-        | Keyword Keyword.False -> return Expression.Constant (Value.Boolean false)
-
-        | Identifier id ->
-            let! typeArgs = TypeIds.parseTypeArguments reader
-
-            match! reader.Next () with
-            | LParen ->
-                reader.Return (Ok LParen)
-                let! funcArgs = parseFunctionArgs reader
-                return Expression.FuncCall (id, typeArgs, funcArgs)
-            | LSBracket ->
-                let! expr = parseExpression reader
-                do! Help.ConsumeLexeme (RSBracket, reader)
-                return Expression.ArrayAccess (Expression.Variable id, expr)
-            | LCBracket ->
-                let! fields = parseFieldsInits reader
-                do! Help.ConsumeLexeme (RCBracket, reader)
-                return Expression.StructCreation ([id], typeArgs, fields)
+    let parseExpr3 () = parser {
+        let rec doParse left = parser {
+            match! next with
+            | { Lexeme = Lexeme.Operator "+" } ->
+                let! right = parseExpr4 ()
+                return! doParse (Expression.BinaryExpression <| BinaryExpression.Plus (left, right))
+            | { Lexeme = Lexeme.Operator "-" } ->
+                let! right = parseExpr4 ()
+                return! doParse (Expression.BinaryExpression <| BinaryExpression.Minus (left, right))
             | input ->
-                reader.Return (Ok input)
-                return Expression.Variable id
+                do! returnLex input
+                return left
+        }
 
-        | LParen ->
-            let! expr = parseExpression reader
-            do! Help.ConsumeLexeme (RParen, reader)
-            return expr
-        | Operator "~" ->
-            let! expr = parseExpression reader
+        let! left = parseExpr4 ()
+        return! doParse left
+    }
+
+    let parseExpr4 () = parser {
+        let rec doParse left = parser {
+            match! next with
+            | { Lexeme = Lexeme.Operator "*" } ->
+                let! right = parseExpr5 ()
+                return! doParse (Expression.BinaryExpression <| BinaryExpression.Multiply (left, right))
+            | { Lexeme = Lexeme.Operator "/" } ->
+                let! right = parseExpr5 ()
+                return! doParse (Expression.BinaryExpression <| BinaryExpression.Division (left, right))
+            | input ->
+                do! returnLex input
+                return left
+        }
+
+        let! left = parseExpr5 ()
+        return! doParse left
+    }
+
+    let parseExpr5 () = parser {
+        let rec doParse left = parser {
+            match! next with
+            | { Lexeme = Lexeme.Dot } ->
+                let! id = readIdentifier
+                return! doParse (Expression.MemberAccess (left, id))
+            | { Lexeme = Lexeme.LSBracket } ->
+                let! right = parseExpression ()
+                do! consume Lexeme.RSBracket
+                return! doParse (Expression.ArrayAccess (left, right))
+            | input ->
+                do! returnLex input
+                return left
+        }
+
+        let! left = parseExpr6 ()
+        return! doParse left
+    }
+
+    let parseExpr6 () = parser {
+        match! next with
+        | { Lexeme = Lexeme.Operator "~" } ->
+            let! expr = parseExpression ()
             return Expression.Bininversion expr
-        | Operator "&" ->
-            match! reader.Next () with
-            | Identifier id -> return Expression.AddressOf id
-            | input -> return! Help.UnexpectedLexeme input
-        | input -> return! Help.UnexpectedLexeme input
+
+        | { Lexeme = Lexeme.String str } -> return Expression.Constant (Value.String str)
+        | { Lexeme = Lexeme.Number num } -> return Expression.Constant (Value.Number num)
+        | { Lexeme = Lexeme.Keyword Keyword.True } -> return Expression.Constant (Value.Boolean true)
+        | { Lexeme = Lexeme.Keyword Keyword.False } -> return Expression.Constant (Value.Boolean false)
+        | { Lexeme = Lexeme.Char ch } -> return Expression.Constant (Value.Char ch)
+
+        | { Lexeme = Lexeme.Identifier name1 } ->
+            match! next with
+            | { Lexeme = Lexeme.Dot } as dotLexeme ->
+                match! next with
+                | { Lexeme = Lexeme.Identifier name2 } as name2Lexeme ->
+
+                    match! next with
+                    | { Lexeme = Lexeme.LParen } as input ->
+                        do! returnLex input
+                        let! funcArguments = parseFunctionArguments ()
+                        return Expression.FuncCall ({ DotString.Name = name2; Alias = Some name1 }, funcArguments)
+                    | { Lexeme = Lexeme.LCBracket } as input ->
+                        do! returnLex input
+                        let! fields = parseFieldsInits ()
+                        return Expression.StructCreation ({ DotString.Name = name2; Alias = Some name1 }, fields)
+                    | input ->
+                        do! returnLex input
+                        do! returnLex name2Lexeme
+                        do! returnLex dotLexeme
+                        return Expression.Variable name1
+
+                | input ->
+                    do! returnLex input
+                    return! parseError input "Expected identifier"
+
+            | { Lexeme = Lexeme.LParen } as input ->
+                do! returnLex input
+                let! funcArguments = parseFunctionArguments ()
+                return Expression.FuncCall ({ DotString.Name = name1; Alias = None }, funcArguments)
+            | { Lexeme = Lexeme.LCBracket } as input ->
+                do! returnLex input
+                let! fields = parseFieldsInits ()
+                return Expression.StructCreation ({ DotString.Name = name1; Alias = None }, fields)
+
+            | input ->
+                do! returnLex input
+                return Expression.Variable name1
+
+
+        | { Lexeme = Lexeme.Operator "-" } ->
+            match! next with
+            | { Lexeme = Lexeme.Number num } -> return Expression.Constant (Value.Number (Number.Negative num))
+            | input ->
+                do! returnLex input
+                return! parseError input "Expected constant number after '-'"
+
+        | input ->
+            do! returnLex input
+            return! parseError input "Expected '~', string, number, true|false, char, identifier.identifier ( ARGS ), identifier.identifier { FIELDS }, identifier, '-' number"
     }
 
-    let parseFunctionArgs (reader: Reader) = result {
-        let rec doParse () = result {
-            match! reader.Peek () with
-            | RParen -> return []
+    let parseFunctionArguments () = parser {
+        let rec doParse () = parser {
+            match! peek with
+            | { Lexeme = Lexeme.RParen } -> return []
+            | { Lexeme = Lexeme.Comma } ->
+                do! consume Lexeme.Comma
+                return! doParse ()
             | _ ->
-                let! expr = parseExpression reader
-                match! reader.Next () with
-                | Comma ->
-                    let! rest = doParse ()
-                    return expr :: rest
-                | input ->
-                    reader.Return (Ok input)
-                    return [ expr ]
+                let! argument = parseExpression ()
+                let! rest = doParse()
+                return argument :: rest
         }
-        do! Help.ConsumeLexeme (LParen, reader)
+
+        do! consume Lexeme.LParen
         let! args = doParse ()
-        do! Help.ConsumeLexeme (RParen, reader)
+        do! consume Lexeme.RParen
         return args
     }
 
-    let parseFieldsInits (reader: Reader) = result {
-        do! skipNewlines reader
-        match! reader.Next () with
-        | Identifier id ->
-            do! Help.ConsumeLexeme (Equal, reader)
-            let! expr = parseExpression reader
-            do! Help.ConsumeLexeme (Newline, reader)
-            let! rest = parseFieldsInits reader
-            return (id, expr) :: rest
-        | RCBracket ->
-            reader.Return (Ok RCBracket)
-            return []
-        | input -> return! Help.UnexpectedLexeme input
+    let parseFieldsInits () = parser {
+        let rec doParse () = parser {
+            do! skipNewlines ()
+            match! next with
+            | { Lexeme = Lexeme.Identifier field } ->
+                do! consume Lexeme.Equal
+                let! expr = parseExpression ()
+                do! consume Lexeme.Newline
+                let! rest = doParse ()
+                return (field, expr) :: rest
+            | { Lexeme = Lexeme.RCBracket } as input ->
+                do! returnLex input
+                return []
+            | input ->
+                do! returnLex input
+                return! parseError input "Expected identifier or '}'"
+        }
+
+        do! consume Lexeme.LCBracket
+        let! fields = doParse ()
+        do! consume Lexeme.RCBracket
+        return fields
     }
+
+    let isExpressionStart (lexeme: Lexeme) =
+        match lexeme with
+        | Lexeme.Operator "~"
+        | Lexeme.String _
+        | Lexeme.Number _
+        | Lexeme.Char _
+        | Lexeme.Keyword Keyword.True
+        | Lexeme.Keyword Keyword.False
+        | Lexeme.Identifier _
+        | Lexeme.Operator "-" -> true
+        | _ -> false
 
 module private rec Statements =
-    let parseStatements isEndOfStats (reader: Reader) = result {
-        do! skipNewlines reader
-        let! input = reader.Peek ()
-        if isEndOfStats input then return []
-        else
-
-            let! statement = parseStatement reader
-            do! Help.ConsumeLexeme (Newline, reader)
-            do! skipNewlines reader
-
-            let! input = reader.Peek ()
-            if isEndOfStats input then return [ statement ]
-            else
-                let! rest = parseStatements isEndOfStats reader
-                return statement :: rest
-    }
-
-    let parseStatement (reader: Reader) = result {
-        match! reader.Next () with
-        | Keyword Keyword.Var ->
-            match! reader.Next () with
-            | Identifier id ->
-                do! Help.ConsumeLexeme (Colon, reader)
-                let! typeId = TypeIds.parseTypeId reader
-
-                match! reader.Next () with
-                | Equal ->
-                    let! expr = Expressions.parseExpression reader
-                    return Statement.VarDecl (id, typeId, Some expr)
-                | input ->
-                    reader.Return (Ok input)
-                    return Statement.VarDecl (id, typeId, None)
-            | input -> return! Help.UnexpectedLexeme input
-
-        | Identifier id  as input ->
-            reader.Return (Ok input)
-            let! id = parseDotString reader
-
-            match! reader.Next () with
-            | Equal ->
-                let! expr = Expressions.parseExpression reader
-                return Statement.VarAssignment (id, expr)
-            | LSBracket ->
-                let! expr = Expressions.parseExpression reader
-                return Statement.ArrayAssignment (id, expr)
-            | input ->
-                reader.Return (Ok input)
-                let! typeArgs = TypeIds.parseTypeArguments reader
-                match! reader.Next () with
-                | LParen ->
-                    reader.Return (Ok LParen)
-                    let! args = Expressions.parseFunctionArgs reader
-                    return Statement.FuncCall (id, typeArgs, args)
-                | input -> return! Help.UnexpectedLexeme input
-
-        | Keyword Keyword.If -> return! parseIfStatement reader
-        | Keyword Keyword.While -> return! parseWhileStatement reader
-        | Keyword Keyword.Defer -> return! parseDeferStatement reader
-        | Keyword Keyword.Return -> return! parseReturnStatement reader
-        | input -> return! Help.UnexpectedLexeme input
-    }
-
-    let parseIfStatement (reader: Reader) = result {
-        let! expr = Expressions.parseExpression reader
-        do! Help.ConsumeLexeme (Keyword Keyword.Then, reader)
-        let isEndOfStat = (fun l -> l = Keyword Keyword.Fi ||
-                                    l = Keyword Keyword.ElseIf ||
-                                    l = Keyword Keyword.Else)
-
-        let! statements = parseStatements isEndOfStat reader
-
-        let rec elseIfs () = result {
-            match! reader.Next () with
-            | Keyword Keyword.ElseIf ->
-                let! expr = Expressions.parseExpression reader
-                do! Help.ConsumeLexeme (Keyword Keyword.Then, reader)
-                let! statements = parseStatements isEndOfStat reader
-                let! rest = elseIfs ()
-                return { IfCond.Condition = expr; Body = statements } :: rest
-            | input ->
-                reader.Return (Ok input)
-                return []
-        }
-
-        let! elseIfs = elseIfs ()
-        let! elsePart = result {
-            match! reader.Next () with
-            | Keyword Keyword.Else ->
-                return! parseStatements (fun l -> l = Keyword Keyword.Fi) reader
-            | input ->
-                reader.Return (Ok input)
-                return []
-        }
-        do! Help.ConsumeLexeme (Keyword Keyword.Fi, reader)
-        return Statement.If ({ Condition = expr; Body = statements }, elseIfs, elsePart)
-    }
-
-    let parseWhileStatement (reader: Reader) = result {
-        let! expr = Expressions.parseExpression reader
-        do! Help.ConsumeLexeme (Keyword Keyword.Do, reader)
-        let! statements = parseStatements (fun l -> l = Keyword Keyword.EndWhile) reader
-        return Statement.While (expr, statements)
-    }
-
-    let parseDeferStatement (reader: Reader) = result {
-        let! statements = parseStatements (fun l -> l = Keyword Keyword.EndDefer) reader
-        do! Help.ConsumeLexeme (Keyword Keyword.EndDefer, reader)
-        return Statement.Defer statements
-    }
-
-    let parseReturnStatement (reader: Reader) = result {
-
-        let! input = reader.Peek ()
-        match input with
-        | Keyword Keyword.EndFunc
-        | Keyword Keyword.EndFor
-        | Keyword Keyword.EndWhile
-        | Keyword Keyword.EndDefer
-        | Keyword Keyword.Fi
-        | Keyword Keyword.Else
-        | Keyword Keyword.ElseIf -> return Statement.Return
-
-        | _ ->
-            let! expr = Expressions.parseExpression reader
-            return Statement.ReturnExpr expr
-    }
-
-
-
-let rec parseOpenDirectives (reader: Reader) =
-    let rec parsePath () = result {
-        match! reader.Next () with
-        | Identifier path ->
-            match! reader.Next () with
-            | Operator "/" ->
-                let! path2 = parsePath ()
-                return sprintf $"%s{path}/%s{path2}"
-            | input ->
-                reader.Return (Ok input)
-                return path
-        | input -> return! Help.UnexpectedLexeme input
-    }
-
-    let parseAlias () = result {
-        match! reader.Next () with
-        | Keyword Keyword.As ->
-            match! reader.Next () with
-            | Identifier id -> return Some id
-            | input -> return! Help.UnexpectedLexeme input
-        | input ->
-            reader.Return (Ok input)
-            return None
-    }
-
-    result {
-        do! skipNewlines reader
-        match! reader.Next () with
-        | Keyword Keyword.Open ->
-            let! path = parsePath ()
-            let! alias = parseAlias ()
-            do! Help.ConsumeLexeme (Newline, reader)
-            let! rest = parseOpenDirectives reader
-            return { OpenDirective.Path = path; Alias = alias } :: rest
-        | input ->
-            reader.Return (Ok input)
-            return []
-    }
-
-let parseVariableDeclaration (reader: Reader) = result {
-    do! Help.ConsumeLexeme (Keyword Keyword.Var, reader)
-
-    match! reader.Next () with
-    | Identifier id  ->
-        do! Help.ConsumeLexeme (Colon, reader)
-        let! typeId = TypeIds.parseTypeId reader
-        let! initExpr = result {
-            match! reader.Next () with
-            | Equal ->
-                let! initExpr = Expressions.parseExpression reader
-                return Some initExpr
-            | input ->
-                reader.Return (Ok input)
-                return None
-        }
-        do! Help.ConsumeLexeme (Newline, reader)
-
-        return { Variable.Name = id
-                 TypeId = typeId
-                 Modifiers = []
-                 InitExpr = initExpr }
-
-    | input -> return! Help.UnexpectedLexeme input
-}
-
-let parseFunctionDeclaration (reader: Reader) =
-    let rec parseFuncArgs () = result {
-        match! reader.Next () with
-        | Identifier id ->
-            do! Help.ConsumeLexeme (Colon, reader)
-            let! typeId = TypeIds.parseTypeId reader
-            match! reader.Next () with
-            | Comma ->
-                let! rest = parseFuncArgs ()
-                return (id, typeId) :: rest
-            | input ->
-                reader.Return (Ok input)
-                return [ (id, typeId) ]
-
-        | input -> return! Help.UnexpectedLexeme input
-    }
-
-    result {
-        do! Help.ConsumeLexeme (Keyword Keyword.Func, reader)
-
-        match! reader.Next () with
-        | Identifier id ->
-            let! typeArgs = TypeIds.parseTypeArgumentNames reader
-
-            do! Help.ConsumeLexeme (LParen, reader)
-            let! args = parseFuncArgs ()
-            do! Help.ConsumeLexeme (RParen, reader)
-
-            let! returnType = result {
-                match! reader.Next () with
-                | Colon ->
-                    return! TypeIds.parseTypeId reader
-                | input ->
-                    reader.Return (Ok input)
-                    return TypeId.Void
-            }
-            do! Help.ConsumeLexeme (Newline, reader)
-            let! statements = Statements.parseStatements (fun l -> l = Keyword Keyword.EndFunc) reader
-            do! Help.ConsumeLexeme(Keyword Keyword.EndFunc, reader)
-
-            return { Function.Name = id
-                     TypeArgs = typeArgs
-                     Args = args
-                     ReturnType = returnType
-                     Modifiers = []
-                     Body = statements }
-
-        | input -> return! Help.UnexpectedLexeme input
-    }
-
-let parseStructUnionEnum (reader: Reader) =
-    let rec parseFieldsDecls () = result {
-        match! reader.Next () with
-        | Identifier id  ->
-            do! Help.ConsumeLexeme (Colon, reader)
-            let! typeId = TypeIds.parseTypeId reader
-            do! Help.ConsumeLexeme (Lexeme.Newline, reader)
-            do! skipNewlines reader
-            let! rest = parseFieldsDecls ()
-            return (id, typeId) :: rest
-
-        | input ->
-            reader.Return (Ok input)
-            return []
-    }
-
-    let rec parseFuncsDecls () = result {
-        match! reader.Peek () with
-        | Keyword Keyword.Func ->
-            let! func = parseFunctionDeclaration reader
-            do! skipNewlines reader
-            let! rest = parseFuncsDecls ()
-            return func :: rest
+    let parseStatements () = parser {
+        match! peek with
+        | { Lexeme = Lexeme.Keyword Keyword.Var } ->
+            let! stat = parseVarStatement ()
+            do! consume Lexeme.Newline
+            let! rest = parseStatements ()
+            return stat :: rest
+        | { Lexeme = Lexeme.Keyword Keyword.If } ->
+            let! stat = parseIfStatement ()
+            do! consume Lexeme.Newline
+            let! rest = parseStatements ()
+            return stat :: rest
+        | { Lexeme = Lexeme.Keyword Keyword.For } ->
+            let! stat = parseForStatement ()
+            do! consume Lexeme.Newline
+            let! rest = parseStatements ()
+            return stat :: rest
+        | { Lexeme = Lexeme.Keyword Keyword.While } ->
+            let! stat = parseWhileStatement ()
+            do! consume Lexeme.Newline
+            let! rest = parseStatements ()
+            return stat :: rest
+        | { Lexeme = Lexeme.Keyword Keyword.Defer } ->
+            let! stat = parseDeferStatement ()
+            do! consume Lexeme.Newline
+            let! rest = parseStatements ()
+            return stat :: rest
+        | { Lexeme = Lexeme.Keyword Keyword.Return } ->
+            let! stat = parseReturnStatement ()
+            do! consume Lexeme.Newline
+            let! rest = parseStatements ()
+            return stat :: rest
+        | input when Expressions.isExpressionStart input.Lexeme ->
+            let! stat = parseExpressionStatement ()
+            do! consume Lexeme.Newline
+            let! rest = parseStatements ()
+            return stat :: rest
         | _ -> return []
     }
 
-    result {
-        let! typeType = result {
-            match! reader.Next () with
-            | Keyword Keyword.Struct -> return TypeType.Struct
-            | Keyword Keyword.Union -> return TypeType.Union
-            | Keyword Keyword.Enum -> return TypeType.Enum
-            | input -> return! Help.UnexpectedLexeme input
+    let parseVarStatement () = parser {
+        do! consume (Lexeme.Keyword Keyword.Var)
+        let! name = readIdentifier
+        do! consume Lexeme.Colon
+        let! typeId = parseTypeId ()
+
+        let! initExpr = parser {
+            match! peek with
+            | { Lexeme = Lexeme.Equal } ->
+                do! consume Lexeme.Equal
+                let! expr = Expressions.parseExpression ()
+                return Some expr
+            | _ -> return None
         }
 
-        match! reader.Next () with
-        | Identifier id ->
-            let! typeArgs = TypeIds.parseTypeArgumentNames reader
-            do! Help.ConsumeLexeme (Newline, reader)
-            do! skipNewlines reader
-            let! fields = parseFieldsDecls ()
-            do! skipNewlines reader
-            let! funcs = parseFuncsDecls ()
-
-            do! result {
-                let! input = reader.Next ()
-                match (input, typeType) with
-                | Keyword Keyword.EndStruct, TypeType.Struct -> return ()
-                | Keyword Keyword.EndUnion, TypeType.Union -> return ()
-                | Keyword Keyword.EndEnum, TypeType.Enum -> return ()
-                | input , _ -> return! Help.UnexpectedLexeme input
-            }
-
-            return { TypeDecl.Name = id
-                     TypeType = typeType
-                     TypeArgs = typeArgs
-                     Fields = fields
-                     Functions = funcs }
-        | input -> return! Help.UnexpectedLexeme input
+        return Statement.VarDecl (name, typeId, initExpr)
     }
 
-let rec parseDeclarations (reader: Reader) : Result<Declaration list, string> = result {
-    do! skipNewlines reader
-    match! reader.Peek () with
-    | Keyword Keyword.Var ->
-        let! variable = parseVariableDeclaration reader
-        let variable = Declaration.Variable variable
-        let! next = parseDeclarations reader
-        return variable :: next
+    let parseIfStatement () = parser {
+        do! consume (Lexeme.Keyword Keyword.If)
+        let! conditionExpr = Expressions.parseExpression ()
+        do! consume (Lexeme.Keyword Keyword.Then)
+        let! mainBody = parseStatements ()
+        let mainIf = { IfCond.Condition = conditionExpr
+                       Body = mainBody }
 
-    | Keyword Keyword.Func ->
-        let! func = parseFunctionDeclaration reader
-        let func = Declaration.Function func
-        let! next = parseDeclarations reader
-        return func :: next
+        let rec parseElseIfs () = parser {
+            match! peek with
+            | { Lexeme = Lexeme.Keyword Keyword.ElseIf } ->
+                do! consume (Lexeme.Keyword Keyword.ElseIf)
+                let! expr = Expressions.parseExpression ()
+                do! consume (Lexeme.Keyword Keyword.Then)
+                let! statements = parseStatements ()
+                let! rest = parseElseIfs ()
+                return { IfCond.Condition = expr
+                         Body = statements } :: rest
+            | _ -> return []
+        }
 
-    | Keyword Keyword.Struct
-    | Keyword Keyword.Union
-    | Keyword Keyword.Enum  ->
-        let! str = parseStructUnionEnum reader
-        let str = Declaration.Type str
-        let! next = parseDeclarations reader
-        return str :: next
+        let! elseIfs = parseElseIfs ()
+        let! elsE = parser {
+            match! peek with
+            | { Lexeme = Lexeme.Keyword Keyword.Else } ->
+                do! consume (Lexeme.Keyword Keyword.Else)
+                let! statements = parseStatements ()
+                return statements
+            | _ -> return []
+        }
 
-    | EndOfFile -> return []
+        do! consume (Lexeme.Keyword Keyword.Fi)
 
-    | input -> return! Help.UnexpectedLexeme input
+        return Statement.If (mainIf, elseIfs, elsE)
+    }
+
+    let parseForStatement () = parser {
+        do! consume (Lexeme.Keyword Keyword.For)
+        let! varName = readIdentifier
+        do! consume (Lexeme.Keyword Keyword.In)
+        let! startExpr = Expressions.parseExpression ()
+        do! consume Lexeme.DoubleDot
+        let! endExpr = Expressions.parseExpression ()
+
+        let! stepExpr = parser {
+            match! peek with
+            | { Lexeme = Lexeme.DoubleDot } ->
+                do! consume Lexeme.DoubleDot
+                let! expr = Expressions.parseExpression ()
+                return Some expr
+            | _ -> return None
+        }
+
+        do! consume (Lexeme.Keyword Keyword.Do)
+        let! statements = Statements.parseStatements ()
+        do! consume (Lexeme.Keyword Keyword.EndFor)
+
+        return Statement.For (varName, startExpr, endExpr, stepExpr, statements)
+    }
+
+    let parseWhileStatement () = parser {
+        do! consume (Lexeme.Keyword Keyword.While)
+        let! condition = Expressions.parseExpression ()
+        do! consume (Lexeme.Keyword Keyword.Do)
+        let! statements = Statements.parseStatements ()
+        do! consume (Lexeme.Keyword Keyword.EndWhile)
+        return Statement.While (condition, statements)
+    }
+
+    let parseDeferStatement () = parser {
+        do! consume (Lexeme.Keyword Keyword.Defer)
+        let! body = Statements.parseStatements ()
+        do! consume (Lexeme.Keyword Keyword.EndDefer)
+
+        return Statement.Defer body
+    }
+
+    let parseReturnStatement () = parser {
+        do! consume (Lexeme.Keyword Keyword.Return)
+
+        match! peek with
+        | input when Expressions.isExpressionStart input.Lexeme ->
+            let! expr = Expressions.parseExpression ()
+            return Statement.ReturnExpr expr
+        | _ -> return Statement.Return
+    }
+
+    let parseExpressionStatement () = parser {
+        let! expr = Expressions.parseExpression ()
+        return Statement.Expression expr
+    }
+
+let parseStructUnionDeclaration () = parser {
+    let rec parseFields () = parser {
+        do! skipNewlines ()
+
+        match! peek with
+        | { Lexeme = Lexeme.Identifier id } ->
+            let! id = readIdentifier
+            do! consume Lexeme.Colon
+            let! typeId = parseTypeId ()
+            do! consume Lexeme.Newline
+            let! rest = parseFields ()
+
+            return (id, typeId) :: rest
+        | _ -> return []
+    }
+
+    let! typeType = parser {
+        match! next with
+        | { Lexeme = Lexeme.Keyword Keyword.Struct } -> return TypeType.Struct
+        | { Lexeme = Lexeme.Keyword Keyword.Union } -> return TypeType.Union
+        | _ -> return failwith "Should not happen."
+    }
+
+    let! name = readIdentifier
+    do! consume Lexeme.Newline
+    let! fields = parseFields ()
+    do! skipNewlines ()
+
+    match typeType with
+    | TypeType.Struct -> do! consume (Lexeme.Keyword Keyword.EndStruct)
+    | TypeType.Union -> do! consume (Lexeme.Keyword Keyword.EndUnion)
+
+    return { TypeDecl.Name = name
+             TypeType = typeType
+             Fields = fields }
 }
 
-let parseSource (reader: Reader) filename = result {
-    let! openDirectives = parseOpenDirectives reader
-    let! declarations = parseDeclarations reader
+let parseFunctionDeclaration (modifier: Modifier option) = parser {
+    let rec parseArguments () = parser {
+        match! peek with
+        | { Lexeme = Lexeme.Identifier _ } ->
+            let! argName = readIdentifier
+            do! consume Lexeme.Colon
+            let! typeId = parseTypeId ()
+            let! rest = parser {
+                match! peek with
+                | { Lexeme = Lexeme.Comma } ->
+                    do! consume Lexeme.Comma
+                    return! parseArguments ()
+                | { Lexeme = Lexeme.RParen } -> return []
+                | input -> return! parseError input "Expected comma or right paren"
+            }
+            return (argName, typeId) :: rest
+
+        | { Lexeme = Lexeme.RParen } -> return []
+
+        | input -> return! parseError input "Expected an identifier or right paren"
+    }
+
+    do! consume (Lexeme.Keyword Keyword.Func)
+
+    let! name = readIdentifier
+
+    do! consume Lexeme.LParen
+    let! args = parseArguments ()
+    do! consume Lexeme.RParen
+
+    let! returnType = parser {
+        match! peek with
+        | { Lexeme = Lexeme.Colon } ->
+            do! consume Lexeme.Colon
+            return! parseTypeId ()
+        | _ -> return TypeId.Void
+    }
+
+    do! consume Lexeme.Newline
+    let! statements = Statements.parseStatements ()
+    do! consume (Lexeme.Keyword Keyword.EndFunc)
+
+    return { Function.Name = name
+             Args = args
+             ReturnType = returnType
+             Modifier = modifier
+             Body = statements }
+}
+
+let parseVariableDeclaration (modifier: Modifier option) = parser {
+    do! consume (Lexeme.Keyword Keyword.Var)
+    let! varName = readIdentifier
+    do! consume Lexeme.Colon
+    let! typeId = parseTypeId ()
+
+    let! expr = parser {
+        match! peek with
+        | { Lexeme = Lexeme.Equal } ->
+            do! consume Lexeme.Equal
+            let! expr = Expressions.parseExpression ()
+            return Some expr
+        | _ -> return None
+    }
+
+    do! consume Lexeme.Newline
+
+    return { Variable.Name = varName
+             TypeId = typeId
+             Modifier = modifier
+             InitExpr = expr }
+}
+
+let rec parseDeclarations () = parser {
+
+    do! skipNewlines ()
+
+    let! modifier = parser {
+        match! peek with
+        | { Lexeme = Lexeme.Keyword Keyword.Export } ->
+            do! consume (Lexeme.Keyword Keyword.Export)
+            return Some Modifier.Export
+        | { Lexeme = Lexeme.Keyword Keyword.Extern } ->
+            do! consume (Lexeme.Keyword Keyword.Extern)
+            return Some Modifier.Extern
+        | _ -> return None
+    }
+
+    match! peek with
+    | { Lexeme = Lexeme.Keyword Keyword.Struct }
+    | { Lexeme = Lexeme.Keyword Keyword.Union } as input ->
+        match modifier with
+        | Some modifier -> return! parseError input $"Structs/Unions can't have modifiers (here \"%A{modifier}\")."
+        | None ->
+            let! typ = parseStructUnionDeclaration ()
+            let! rest = parseDeclarations ()
+            return (Declaration.Type typ) :: rest
+
+    | { Lexeme = Lexeme.Keyword Keyword.Func } ->
+        let! func = parseFunctionDeclaration modifier
+        let! rest = parseDeclarations ()
+        return (Declaration.Function func) :: rest
+
+    | { Lexeme = Lexeme.Keyword Keyword.Var } ->
+        let! var = parseVariableDeclaration modifier
+        let! rest = parseDeclarations ()
+        return (Declaration.Variable var) :: rest
+
+    | { Lexeme = Lexeme.EndOfFile } as input ->
+        match modifier with
+        | Some _ -> return! parseError input "Unexpected end of file."
+        | None -> return []
+
+    | input -> return! parseError input "Unexpected lexeme at the root of file. Expected struct/union/func/var."
+}
+
+let parseSource (filename: string) = parser {
+    let! openDirectives = parseOpenDirectives ()
+    let! declarations = parseDeclarations ()
+
     return { Source.OpenDirectives = openDirectives
              Declarations = declarations
              Filename = filename }
 }
 
-let parseSourceFromStr (str: string) = result {
-    use reader = Lexer.charReaderFromStr str
-    let lexemes = Lexer.tokenize reader
-    use lexemeReader = new SeqReader<Result<Lexeme, string>> (lexemes)
-    let! source = parseSource lexemeReader ""
-    return source
-}
+let parseSourceFromString (input: string) =
+    let lexemes = Lexer.tokenizeFromString input
+    use reader = new SeqReader<Result<LexemeContainer, string>> (lexemes)
 
-let parseSourceFromTextReader textReader filename = result {
-    use reader = Lexer.charReaderFromTextReader textReader
-    let lexemes = Lexer.tokenize reader
-    use lexemeReader = new SeqReader<Result<Lexeme, string>> (lexemes)
-    return! parseSource lexemeReader filename
-}
+    parseSource "< STRING INPUT >" reader

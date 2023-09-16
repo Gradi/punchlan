@@ -13,25 +13,17 @@ let private writeOpenDirectives (openDirs: OpenDirective list) sb =
         match dir.Alias with
         | Some alias -> bprintf sb $" as %s{alias}"
         | None -> ()
-
         bprintf sb "\n")
 
-let private writeModifiers (mods: Modifier list) sb =
+let private writeModifier (modifier: Modifier option) sb =
     let modToStr m =
         match m with
         | Extern -> "extern"
         | Export -> "export"
 
-    match mods with
-    | [] -> ()
-    | head :: xs ->
-        bprintf sb $"%s{modToStr head}"
-        xs
-        |> List.iter (fun m -> bprintf sb $" %s{modToStr m}")
-
-let private writeDotString (str: DotString) sb =
-    let str = String.concat "." str
-    bprintf sb $"%s{str}"
+    match modifier with
+    | Some modifier -> bprintf sb $"%s{(modToStr modifier)} "
+    | None -> ()
 
 let rec private writeTypeId (typ: TypeId) sb =
     match typ with
@@ -47,7 +39,6 @@ let rec private writeTypeId (typ: TypeId) sb =
     | Double -> bprintf sb "double"
     | Bool -> bprintf sb "bool"
     | TypeId.Char -> bprintf sb "char"
-    | Sizet -> bprintf sb "sizet"
     | Void -> bprintf sb "void"
     | Pointer typ ->
         bprintf sb "pointer<"
@@ -56,20 +47,7 @@ let rec private writeTypeId (typ: TypeId) sb =
     | Const typ ->
         bprintf sb "const "
         writeTypeId typ sb
-    | Named (name, typeArgs) ->
-        writeDotString name sb
-        writeTypeArgs typeArgs sb
-
-and private writeTypeArgs (typeArgs: TypeId list) sb =
-    match typeArgs with
-    | [] -> ()
-    | x :: xs ->
-        bprintf sb " < "
-        writeTypeId x sb
-        xs |> List.iter (fun t ->
-            bprintf sb ", "
-            writeTypeId t sb)
-        bprintf sb " >"
+    | Named name -> bprintf sb $"%s{(name.ToString ())}"
 
 let rec private writeExpression (expr: Expression) sb =
     bprintf sb "("
@@ -143,27 +121,13 @@ let rec private writeExpression (expr: Expression) sb =
     | Constant (Boolean bool) -> bprintf sb $"%b{bool}"
     | Constant (Char ch) -> bprintf sb $"%c{ch}"
     | Variable name -> bprintf sb $"%s{name}"
-    | FuncCall (name, typeArgs, exprs) ->
-        bprintf sb $"%s{name}"
-        writeTypeArgs typeArgs sb
+    | FuncCall (name, exprs) ->
+        bprintf sb $"%s{name.ToString () }"
         bprintf sb " ("
         match exprs with
         | [] -> ()
         | head :: xs ->
             writeExpression head sb
-            xs |> List.iter (fun e ->
-                bprintf sb ", "
-                writeExpression e sb)
-        bprintf sb ")"
-    | MemberCall (this, name, typeArgs, funcArgs) ->
-        writeExpression this sb
-        bprintf sb $".%s{name}"
-        writeTypeArgs typeArgs sb
-        bprintf sb " ("
-        match funcArgs with
-        | [] -> ()
-        | x :: xs ->
-            writeExpression x sb
             xs |> List.iter (fun e ->
                 bprintf sb ", "
                 writeExpression e sb)
@@ -177,10 +141,8 @@ let rec private writeExpression (expr: Expression) sb =
         bprintf sb "["
         writeExpression index sb
         bprintf sb "]"
-    | StructCreation (name, typeArgs, fields) ->
-        writeDotString name sb
-        writeTypeArgs typeArgs sb
-        bprintf sb " {\n"
+    | StructCreation (name, fields) ->
+        bprintf sb $"%s{name.ToString ()} {{\n"
         match fields with
         | [] -> ()
         | (f0, e0) :: xs ->
@@ -191,8 +153,6 @@ let rec private writeExpression (expr: Expression) sb =
                 bprintf sb $"%s{f} = "
                 writeExpression e sb)
         bprintf sb "\n}"
-    | AddressOf name ->
-        bprintf sb $"& %s{name}"
     | Bininversion expr ->
         bprintf sb "~"
         writeExpression expr sb
@@ -213,30 +173,9 @@ let rec private writeStatements (stats: Statement list) sb =
             | None -> ()
 
         | VarAssignment (name, expr) ->
-            writeDotString name sb
+            writeExpression name sb
+            bprintf sb " = "
             writeExpression expr sb
-
-        | Statement.FuncCall (name, typeArgs, expr) ->
-            writeDotString name sb
-            match typeArgs with
-            | [] -> ()
-            | x :: xs ->
-                bprintf sb " <"
-                writeTypeId x sb
-                xs |> List.iter (fun t ->
-                    bprintf sb ", "
-                    writeTypeId t sb)
-                bprintf sb ">"
-
-            match expr with
-            | [] -> bprintf sb " ()"
-            | x :: xs ->
-                bprintf sb " ("
-                writeExpression x sb
-                xs |> List.iter (fun e ->
-                    bprintf sb ", "
-                    writeExpression e sb)
-                bprintf sb ")"
 
         | If (ifCond, elseIf, elsE) ->
             bprintf sb "if "
@@ -286,20 +225,14 @@ let rec private writeStatements (stats: Statement list) sb =
         | ReturnExpr expr ->
             bprintf sb "return "
             writeExpression expr sb
-
-        | ArrayAssignment (name, expr) ->
-            writeDotString name sb
-            bprintf sb " ["
-            writeExpression expr sb
-            bprintf sb "]"
-
+        | Statement.Expression expr -> writeExpression expr sb
 
     stats |> List.iter (fun s ->
         writeStat s
         bprintf sb "\n")
 
 let private writeVariable (variable: Variable) sb =
-    writeModifiers variable.Modifiers sb
+    writeModifier variable.Modifier sb
     bprintf sb $"var %s{variable.Name} : "
     writeTypeId variable.TypeId sb
     match variable.InitExpr with
@@ -310,14 +243,8 @@ let private writeVariable (variable: Variable) sb =
     bprintf sb "\n"
 
 let private writeFunction (func: Function) sb =
-    writeModifiers func.Modifiers sb
+    writeModifier func.Modifier sb
     bprintf sb $"func %s{func.Name}"
-    match func.TypeArgs with
-    | [] -> ()
-    | _ ->
-        let typeArgs = String.concat ", " func.TypeArgs
-        bprintf sb $" < %s{typeArgs} >"
-
     bprintf sb " ("
     match func.Args with
     | [] -> ()
@@ -343,16 +270,8 @@ let writeType (typ: TypeDecl) sb =
     match typ.TypeType with
     | TypeType.Struct -> bprintf sb "struct"
     | TypeType.Union -> bprintf sb "union"
-    | TypeType.Enum -> bprintf sb "enum"
 
     bprintf sb $" %s{typ.Name}"
-
-    match typ.TypeArgs with
-    | [] -> ()
-    | xs ->
-        let typeArgs = String.concat ", " typ.TypeArgs
-        bprintf sb $" <%s{typeArgs}>"
-    bprintf sb "\n"
 
     typ.Fields
     |> List.iter (fun (name, typeId) ->
@@ -360,13 +279,9 @@ let writeType (typ: TypeDecl) sb =
         writeTypeId typeId sb
         bprintf sb "\n")
 
-    typ.Functions
-    |> List.iter (fun func -> writeFunction func sb)
-
     match typ.TypeType with
     | TypeType.Struct -> bprintf sb "endstruct"
     | TypeType.Union -> bprintf sb "endunion"
-    | TypeType.Enum -> bprintf sb "endenum"
     bprintf sb "\n"
 
 let private writeDeclarations (decls: Declaration list) sb =

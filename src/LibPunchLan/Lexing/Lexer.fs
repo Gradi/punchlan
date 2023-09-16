@@ -1,333 +1,350 @@
-﻿module LibPunchLan.Lexing.Lexer
+﻿module rec LibPunchLan.Lexing.Lexer
 
 open System.Text
+open LibPunchLan
 open LibPunchLan.Lexing
-open LibPunchLan.ResultM
-open LibPunchLan.Addons
 
-let stringToKeywordOrIdentifier str =
+type Char =
+    { Char: char
+      Row: int
+      Col: int }
+
+type private LexerState =
+    { CharBuf: Char list
+      ReturnedChars: Char list
+      State: Char option -> LexerState -> LexerResult }
+
+type private LexerResult =  LexerState * Result<LexemeContainer, string> option
+
+
+let private stateNone (state: LexerState) = (state, None)
+
+let private stateOk (state: LexerState) (lex: Lexeme) (char: Char) =
+    (state, Some <| Ok { LexemeContainer.Lexeme= lex; Row = char.Row; Col = char.Col })
+
+let private stateError (state: LexerState) (char: Char) msg =
+    let message = sprintf msg
+    let message = sprintf $"(row: %d{char.Row}, col: %d{char.Col}): %s{message}"
+
+    (state, Some <| Error message)
+
+let private stateError' (state: LexerState) msg = stateError state { Char.Char = ' ' ; Row = -1; Col = -1} msg
+
+let private stateAddChar (char: Char) (state: LexerState) =
+    { state with CharBuf = state.CharBuf @ [ char ] }
+
+let private stateReturnChar (char: Char) (state: LexerState) =
+    { state with ReturnedChars = char :: state.ReturnedChars }
+
+let private charsToStr (chars: Char list) =
+    let builder = StringBuilder ()
+    chars
+    |> List.iter (fun c -> builder.Append c.Char |> ignore)
+
+    builder.ToString ()
+
+
+
+let private initialState (char: Char option) (state: LexerState) =
+    match char with
+    | None -> stateNone state
+
+    | Some ({ Char = '(' } as char) -> stateOk state Lexeme.LParen char
+    | Some ({ Char = ')' } as char) -> stateOk state Lexeme.RParen char
+    | Some ({ Char = '[' } as char) -> stateOk state Lexeme.LSBracket char
+    | Some ({ Char = ']' } as char) -> stateOk state Lexeme.RSBracket char
+    | Some ({ Char = '{' } as char) -> stateOk state Lexeme.LCBracket char
+    | Some ({ Char = '}' } as char) -> stateOk state Lexeme.RCBracket char
+    | Some ({ Char = ':' } as char) -> stateOk state Lexeme.Colon char
+    | Some ({ Char = ',' } as char) -> stateOk state Lexeme.Comma char
+    | Some ({ Char = '\n' } as char) -> stateOk state Lexeme.Newline char
+
+    | Some ({ Char = '+' } as char) -> stateOk state (Lexeme.Operator "+") char
+    | Some ({ Char = '-' } as char) -> stateOk state (Lexeme.Operator "-") char
+    | Some ({ Char = '*' } as char) -> stateOk state (Lexeme.Operator "*") char
+    | Some ({ Char = '/' } as char) -> stateOk state (Lexeme.Operator "/") char
+    | Some ({ Char = '&' } as char) -> stateOk state (Lexeme.Operator "&") char
+
+    | Some ({ Char = '\"' } as char) -> stateNone { (stateAddChar char state) with State = stringLiteralState }
+    | Some ({ Char = '\'' } as char) -> stateNone { (stateAddChar char state) with State = charLiteralState }
+
+    | Some ({ Char = ch } as char) when List.contains ch [ '0'; '1'; '2'; '3'; '4'; '5'; '6'; '7'; '8'; '9' ] ->
+        stateNone { (stateAddChar char state) with State = numberLiteralState }
+
+    | Some ({ Char = ch } as char) when System.Char.IsLetter ch || ch = '_' ->
+        stateNone { (stateAddChar char state) with State = keywordOrIdentifierState }
+
+    | Some ({ Char = '.' } as char) -> stateNone { (stateAddChar char state) with State = dotSymbolState }
+
+    | Some ({ Char = '<' } as char)
+    | Some ({ Char = '=' } as char)
+    | Some ({ Char = '>' } as char)
+    | Some ({ Char = '!' } as char) -> stateNone { (stateAddChar char state) with State = equalNotEqualState }
+
+    | Some { Char = ' ' }
+    | Some { Char = '\t' }
+    | Some { Char = '\r' } -> stateNone state
+
+    | Some ({ Char = ch } as char) -> stateError state char $"Unknown char \'%c{ch}\'"
+
+let private stringLiteralState (char: Char option) (state: LexerState) =
+    let emitString () =
+        match state.CharBuf with
+        | [] -> failwith "Unexpected state: string literal state with empty char buffer."
+        | quote :: rest ->
+            let str = charsToStr rest
+            stateOk { state with CharBuf = []; State = initialState } (Lexeme.String str) quote
+
+    match char with
+    | None -> emitString ()
+    | Some { Char = '\\' } -> stateNone { state with State = escapeCharState state.State }
+    | Some { Char = '\"' } -> emitString ()
+    | Some ({ Char = _ } as char) -> stateNone (stateAddChar char state)
+
+let private charLiteralState (char: Char option) (state: LexerState) =
+    let emitChar () =
+        match state.CharBuf with
+        | [] -> failwith "Unexpected state: char literal state with empty char buffer."
+        | [ { Char = '\'' } as char ] -> stateError state char "Unfinished char literal"
+        | [ { Char = '\'' } as char ; { Char = '\'' } ] -> stateError state char "Empty char literal"
+        | [ { Char = '\'' } ; { Char = ch } as char ; { Char = '\'' } ] ->
+            stateOk { state with CharBuf = []; State = initialState } (Lexeme.Char ch) char
+        | xs ->
+            let xsstr = charsToStr xs
+            stateError state (List.head xs) $"Bad char literal, expected one char in single quotes, but found %s{xsstr}"
+
+    match char with
+    | None -> emitChar ()
+    | Some { Char = '\\' } -> stateNone { state with State = escapeCharState state.State }
+    | Some { Char = '\'' } -> emitChar ()
+    | Some ({ Char = _ } as char) -> stateNone (stateAddChar char state)
+
+let private numberLiteralState (char: Char option) (state: LexerState) =
+    let isValidCharNumber (ch: char) =
+        match ch with
+        | '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'
+        | 'a' | 'b' | 'c' | 'd' | 'e' | 'f'
+        | 'A' | 'B' | 'C' | 'D' | 'E' | 'F'
+        | 'x' | 'X' | '.' -> true
+        | _ -> false
+
+    let emitNumber (state: LexerState) =
+        match state.CharBuf with
+        | [] -> failwith "Unexpected state: number literal state with emtpy buffer"
+        | xs ->
+            let str = charsToStr xs
+            match NumberMod.tryParseNumber str with
+            | Some number ->
+                stateOk { state with CharBuf = []; State = initialState } (Lexeme.Number number) (List.head xs)
+            | None -> stateError state (List.head xs) $"Can't parse value \"%s{str}\" into number."
+
+    match char with
+    | None -> emitNumber state
+    | Some ({ Char = ch } as char) when isValidCharNumber ch ->
+        stateNone (stateAddChar char state)
+    | Some char -> emitNumber (stateReturnChar char state)
+
+let private keywordOrIdentifierState (char: Char option) (state: LexerState) =
+    let isValidChar ch = System.Char.IsLetter ch ||
+                         System.Char.IsDigit ch ||
+                         ch = '_'
+
+    let emitBuffer (state: LexerState) =
+        match state.CharBuf with
+        | [] -> failwith "Unexpected state: keyword or identifier state with empty char buffer"
+        | xs ->
+            let str = charsToStr xs
+            let lexeme = stringToKeywordOrIdentifier str
+            stateOk { state with CharBuf = []; State = initialState } lexeme (List.head xs)
+
+    match char with
+    | None -> emitBuffer state
+    | Some ({ Char = ch } as char) when isValidChar ch -> stateNone (stateAddChar char state)
+    | Some char -> emitBuffer (stateReturnChar char state)
+
+let private dotSymbolState (char: Char option) (state: LexerState) =
+    let emitDot (state: LexerState) =
+        match state.CharBuf with
+        | [] -> failwith "Unexpected state: dot symbol state with empty char buffer"
+        | xs ->
+            match charsToStr xs with
+            | "." -> stateOk { state with CharBuf = []; State = initialState } Lexeme.Dot (List.head xs)
+            | ".." -> stateOk { state with CharBuf = []; State = initialState } Lexeme.DoubleDot (List.head xs)
+            | xs -> stateError state (List.head state.CharBuf) $"Only \'.\' or \'..\' dots allowed, but not this: %s{xs}"
+
+    match char with
+    | None -> emitDot state
+    | Some ({ Char = '.' } as char) -> stateNone (stateAddChar char state)
+    | Some char -> emitDot (stateReturnChar char state)
+
+let private equalNotEqualState (char: Char option) (state: LexerState) =
+    let emit (state: LexerState) =
+        match state.CharBuf with
+        | [] -> failwith "Unexpected state: equal not equal state with empty char buffer."
+        | xs ->
+            let str = charsToStr xs
+            let lexeme =
+                match str with
+                | "<" -> Some Lexeme.LABracket
+                | "<<" -> Some <| Lexeme.Operator "<<"
+                | "<=" -> Some Lexeme.LessThanOrEqual
+                | ">" -> Some Lexeme.RABracket
+                | ">>" -> Some <| Lexeme.Operator ">>"
+                | ">=" -> Some Lexeme.GreaterThanOrEqual
+                | "=" -> Some Lexeme.Equal
+                | "==" -> Some Lexeme.DEqual
+                | "!=" -> Some Lexeme.NotEqual
+                | _ -> None
+
+            match lexeme with
+            | Some lexeme -> stateOk { state with CharBuf = []; State = initialState } lexeme (List.head xs)
+            | None -> stateError state (List.head xs) $"Bad operator string: %s{str}."
+
+    match char with
+    | None -> emit state
+    | Some ({ Char = '<' } as char)
+    | Some ({ Char = '=' } as char)
+    | Some ({ Char = '>' } as char)
+    | Some ({ Char = '!' } as char) -> stateNone (stateAddChar char state)
+    | Some char -> emit (stateReturnChar char state)
+
+let private escapeCharState prevState (char: Char option) (state: LexerState) =
+    match char with
+    | None -> stateError' state "Unexpected end of file"
+    | Some char ->
+        let finalChar =
+            match char.Char with
+            | 'a' -> '\a'
+            | 'b' -> '\b'
+            | 'f' -> '\f'
+            | 'n' -> '\n'
+            | 'r' -> '\r'
+            | 't' -> '\t'
+            | 'v' -> '\v'
+            | c -> c
+        stateNone { (stateAddChar { char with Char = finalChar } state) with State = prevState }
+
+let private stringToKeywordOrIdentifier str =
     match str with
-    | "and" -> Lexeme.Keyword          Keyword.And
-    | "as" -> Lexeme.Keyword           Keyword.As
-    | "bool" -> Lexeme.Keyword         Keyword.Bool
-    | "char" -> Lexeme.Keyword         Keyword.Char
-    | "const" -> Lexeme.Keyword        Keyword.Const
-    | "defer" -> Lexeme.Keyword        Keyword.Defer
-    | "double" -> Lexeme.Keyword       Keyword.Double
-    | "else" -> Lexeme.Keyword         Keyword.Else
-    | "elseif" -> Lexeme.Keyword       Keyword.ElseIf
-    | "enddefer" -> Lexeme.Keyword     Keyword.EndDefer
-    | "endenum" -> Lexeme.Keyword      Keyword.EndEnum
-    | "endfor" -> Lexeme.Keyword       Keyword.EndFor
-    | "endfunc" -> Lexeme.Keyword      Keyword.EndFunc
-    | "endstruct" -> Lexeme.Keyword    Keyword.EndStruct
-    | "endunion" -> Lexeme.Keyword     Keyword.EndUnion
-    | "endwhile" -> Lexeme.Keyword     Keyword.EndWhile
-    | "enum"  -> Lexeme.Keyword        Keyword.Enum
-    | "extern" -> Lexeme.Keyword       Keyword.Extern
-    | "false" -> Lexeme.Keyword        Keyword.False
-    | "fi" -> Lexeme.Keyword           Keyword.Fi
-    | "float" -> Lexeme.Keyword        Keyword.Float
-    | "for" -> Lexeme.Keyword          Keyword.For
-    | "func" -> Lexeme.Keyword         Keyword.Func
-    | "if" -> Lexeme.Keyword           Keyword.If
-    | "in" -> Lexeme.Keyword           Keyword.In
-    | "int16" -> Lexeme.Keyword        Keyword.Int16
-    | "int32" -> Lexeme.Keyword        Keyword.Int32
-    | "int8" -> Lexeme.Keyword         Keyword.Int8
-    | "not" -> Lexeme.Keyword          Keyword.Not
-    | "open" -> Lexeme.Keyword         Keyword.Open
-    | "or" -> Lexeme.Keyword           Keyword.Or
-    | "pointer" -> Lexeme.Keyword      Keyword.Pointer
-    | "private" -> Lexeme.Keyword      Keyword.Private
-    | "return" -> Lexeme.Keyword       Keyword.Return
-    | "sizet" -> Lexeme.Keyword        Keyword.Sizet
-    | "struct" -> Lexeme.Keyword       Keyword.Struct
-    | "true" -> Lexeme.Keyword         Keyword.True
-    | "uint16" -> Lexeme.Keyword       Keyword.Uint16
-    | "uint32" -> Lexeme.Keyword       Keyword.Uint32
-    | "uint8" -> Lexeme.Keyword        Keyword.Uint8
-    | "union" -> Lexeme.Keyword        Keyword.Union
-    | "var" -> Lexeme.Keyword          Keyword.Var
-    | "void" -> Lexeme.Keyword         Keyword.Void
-    | "while" -> Lexeme.Keyword        Keyword.While
-    | "xor" -> Lexeme.Keyword          Keyword.Xor
-    | "then" -> Lexeme.Keyword         Keyword.Then
-    | "do" -> Lexeme.Keyword           Keyword.Do
-    | value -> Lexeme.Identifier value
+    | "open" -> Lexeme.Keyword Keyword.Open
+    | "as" -> Lexeme.Keyword Keyword.As
+    | "func" -> Lexeme.Keyword Keyword.Func
+    | "endfunc" -> Lexeme.Keyword Keyword.EndFunc
+    | "struct" -> Lexeme.Keyword Keyword.Struct
+    | "endstruct" -> Lexeme.Keyword Keyword.EndStruct
+    | "union" -> Lexeme.Keyword Keyword.Union
+    | "endunion" -> Lexeme.Keyword Keyword.EndUnion
+    | "if" -> Lexeme.Keyword Keyword.If
+    | "then" -> Lexeme.Keyword Keyword.Then
+    | "elseif" -> Lexeme.Keyword Keyword.ElseIf
+    | "else" -> Lexeme.Keyword Keyword.Else
+    | "fi" -> Lexeme.Keyword Keyword.Fi
+    | "while" -> Lexeme.Keyword Keyword.While
+    | "do" -> Lexeme.Keyword Keyword.Do
+    | "endwhile" -> Lexeme.Keyword Keyword.EndWhile
+    | "for" -> Lexeme.Keyword Keyword.For
+    | "in" -> Lexeme.Keyword Keyword.In
+    | "endfor" -> Lexeme.Keyword Keyword.EndFor
+    | "return" -> Lexeme.Keyword Keyword.Return
+    | "var" -> Lexeme.Keyword Keyword.Var
+    | "extern" -> Lexeme.Keyword Keyword.Extern
+    | "export" -> Lexeme.Keyword Keyword.Export
+    | "defer" -> Lexeme.Keyword Keyword.Defer
+    | "enddefer" -> Lexeme.Keyword Keyword.EndDefer
+    | "int8" -> Lexeme.Keyword Keyword.Int8
+    | "uint8" -> Lexeme.Keyword Keyword.Uint8
+    | "int16" -> Lexeme.Keyword Keyword.Int16
+    | "uint16" -> Lexeme.Keyword Keyword.Uint16
+    | "int32" -> Lexeme.Keyword Keyword.Int32
+    | "uint32" -> Lexeme.Keyword Keyword.Uint32
+    | "int64" -> Lexeme.Keyword Keyword.Int64
+    | "uint64" -> Lexeme.Keyword Keyword.Uint64
+    | "double" -> Lexeme.Keyword Keyword.Double
+    | "float" -> Lexeme.Keyword Keyword.Float
+    | "char" -> Lexeme.Keyword Keyword.Char
+    | "bool" -> Lexeme.Keyword Keyword.Bool
+    | "void" -> Lexeme.Keyword Keyword.Void
+    | "pointer" -> Lexeme.Keyword Keyword.Pointer
+    | "const" -> Lexeme.Keyword Keyword.Const
+    | "true" -> Lexeme.Keyword Keyword.True
+    | "false" -> Lexeme.Keyword Keyword.False
+    | "and" -> Lexeme.Keyword Keyword.And
+    | "or" -> Lexeme.Keyword Keyword.Or
+    | "not" -> Lexeme.Keyword Keyword.Not
+    | "xor" -> Lexeme.Keyword Keyword.Xor
+    | str -> Lexeme.Identifier str
 
-type private LexerState = char option -> unit
 
-type private Tokenizer(reader: char SeqReader) as this =
 
-    let mutable state: LexerState = this.InitialState
-    let mutable charBuffer: char list = []
-    let mutable nextLexeme: Result<Lexeme, string> option = None
+let textReaderToCharSeq (reader: System.IO.TextReader) = seq {
+    let mutable input = reader.Read ()
 
-    let ok lexeme =
-        match nextLexeme with
-        | Some _ -> failwith "Lexer: Current lexeme is not None."
-        | None ->
-            nextLexeme <- Some <| Ok lexeme
+    while input <> -1 do
+        yield (char input)
+        input <- reader.Read ()
+}
 
-    let failUnknownChar char =
-        nextLexeme <- Some <| resultf $"Lexer: Unknown character '%c{char}'."
+let indexedChars (chars: char seq) = seq {
+    let mutable row = 1
+    let mutable col = 1
 
-    let fail (str: Printf.StringFormat<string>) =
-        nextLexeme <- Some <| resultf $"Lexer: %s{sprintf str}"
+    for char in chars do
+        yield { Char.Char = char; Row = row; Col = col }
 
-    let clearCharBuffer () = charBuffer <- []
+        col <- col + 1
+        if char = '\n' then
+            row <- row + 1
+            col <- 1
+}
 
-    let charBufferToStr () =
-        let sb = StringBuilder (List.length charBuffer)
-        charBuffer |> List.iter (fun ch -> sb.Append ch |> ignore)
-        sb.ToString ()
+let tokenize (chars: Char seq) : Result<LexemeContainer, string> seq =
+    seq {
+        let mutable state =
+            { CharBuf = []
+              ReturnedChars = []
+              State = initialState }
 
-    member private _.InitialState char =
-        match char with
-        | None -> ()
-        | Some char ->
-            match char with
-            | '(' -> ok Lexeme.LParen
-            | ')' -> ok Lexeme.RParen
-            | '[' -> ok Lexeme.LSBracket
-            | ']' -> ok Lexeme.RSBracket
-            | '{' -> ok Lexeme.LCBracket
-            | '}' -> ok Lexeme.RCBracket
-            | '<' -> ok Lexeme.LABracket
-            | '>' -> ok Lexeme.RABracket
-            | ':' -> ok Lexeme.Colon
-            | ',' -> ok Lexeme.Comma
-            | '-' -> ok (Lexeme.Operator "-")
-            | '+' -> ok (Lexeme.Operator "+")
-            | '*' -> ok (Lexeme.Operator "*")
-            | '/' -> ok (Lexeme.Operator "/")
-            | '|' -> ok (Lexeme.Operator "|")
-            | '&' -> ok (Lexeme.Operator "&")
+        let rec returnChars () = seq {
+            match state.ReturnedChars with
+            | [] -> ()
+            | head :: rest ->
+                state <- { state with ReturnedChars = rest }
 
-            | '\"' ->
-                charBuffer <- [ char ]
-                state <- this.StringState
+                let newState, resultOption = state.State (Some head) state
+                state <- newState
 
-            | '\'' ->
-                charBuffer <- [ char ]
-                state <- this.CharState
-
-            | '='
-            | '!' ->
-                charBuffer <- [ char ]
-                state <- this.OperatorState
-
-            | '.' ->
-                charBuffer <- [ char ]
-                state <- this.DotState
-
-            | '\n' -> ok Lexeme.Newline
-
-            | value when System.Char.IsLetter value || value = '_' ->
-                charBuffer <- [ char ]
-                state <-  this.KeywordOrIdentifierState
-
-            | value when System.Char.IsNumber value ->
-                charBuffer <- [ char ]
-                state <- this.NumberState
-
-            | ' '
-            | '\t'
-            | '\r' -> ()
-
-            | _ -> failUnknownChar char
-
-    member _.KeywordOrIdentifierState inputChar =
-        let emitCurrentKeyOrId () =
-            let string = charBufferToStr ()
-            clearCharBuffer ()
-            ok (stringToKeywordOrIdentifier string)
-
-        let isPermittedChar char =
-            System.Char.IsLetter char ||
-            System.Char.IsNumber char ||
-            char = '_'
-
-        match inputChar, charBuffer with
-        | None, [] -> ()
-        | None, _ -> emitCurrentKeyOrId ()
-        | Some char, _ when isPermittedChar char ->
-            charBuffer <- charBuffer @ [ char ]
-        | Some _, [] -> fail "Invalid state: KeywordOrIdentifierState with empty buffer."
-        | Some char, _ ->
-            let result = emitCurrentKeyOrId ()
-            state <- this.InitialState
-            reader.Return char
-            result
-
-    member _.NumberState inputChar =
-        let emitCurrentNumber () =
-            let numberStr = charBufferToStr ()
-            clearCharBuffer ()
-
-            match NumberMod.tryParseNumber numberStr with
-            | None -> fail $"Can't parse number \'%s{numberStr}\'."
-            | Some number -> ok (Lexeme.Number number)
-
-        match (inputChar, charBuffer) with
-        | None, [] -> ()
-        | None, _ -> emitCurrentNumber ()
-
-        | Some char, _ ->
-            match char with
-            | '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'
-            | 'a' | 'b' | 'c' | 'd' | 'e' | 'f'
-            | 'x'
-            | '-' | '.' ->
-                charBuffer <- charBuffer @ [ char ]
-            | _ ->
-                match charBuffer with
-                | [] -> fail "Invalid state: NumberState with empty buffer."
-                | _ ->
-                    let result = emitCurrentNumber ()
-                    reader.Return char
-                    state <- this.InitialState
-                    result
-
-    member _.OperatorState inputChar =
-        let emitCurrentOperator () =
-            let operatorStr = charBufferToStr ()
-            clearCharBuffer ()
-
-            match operatorStr with
-            | "=" -> ok Lexeme.Equal
-            | "==" -> ok Lexeme.DEqual
-            | "!=" -> ok Lexeme.NotEqual
-            | "<=" -> ok Lexeme.LessThanOrEqual
-            | ">=" -> ok Lexeme.GreaterThanOrEqual
-            | value -> fail $"Unknown operator \'%s{value}\'."
-
-        match inputChar, charBuffer with
-        | None, [] -> ()
-        | None, _ -> emitCurrentOperator ()
-
-        | Some ('=' as char), _ ->
-            charBuffer <- charBuffer @ [ char ]
-            emitCurrentOperator ()
-        | Some _, [] -> fail "Invalid state: OperatorState with empty buffer."
-        | Some char, _ ->
-            let result = emitCurrentOperator ()
-            reader.Return char
-            state <- this.InitialState
-            result
-
-    member _.StringState inputChar =
-        let emitCurrentStr () =
-            charBuffer <- List.tail charBuffer // To remove first '"' char
-            let str = charBufferToStr ()
-            clearCharBuffer ()
-            ok (Lexeme.String str)
-
-        match (inputChar, charBuffer) with
-        | None, []  -> ()
-        | None, _ -> emitCurrentStr ()
-
-        | Some '\\', _ ->
-            state <- this.EscapeSeqState this.StringState
-
-        | Some '\"', _ ->
-            let result = emitCurrentStr ()
-            state <- this.InitialState
-            result
-
-        | Some ch, _ ->
-            charBuffer <- charBuffer @ [ ch ]
-
-    member _.EscapeSeqState nextState inputChar =
-        match inputChar with
-        | Some 'n' ->
-            charBuffer <-  charBuffer @ [ '\n' ]
-            state <- nextState
-        | Some 'r' ->
-            charBuffer <- charBuffer @ [ '\r' ]
-            state <- nextState
-        | Some 't' ->
-            charBuffer <- charBuffer @ [ '\t' ]
-            state <- nextState
-        | Some ch ->
-            charBuffer <- charBuffer @ [ ch ]
-            state <- nextState
-        | None -> fail "Unexpected EOF."
-
-    member _.CharState inputChar =
-        let emitCurrentChar () =
-            let str = charBufferToStr ()
-            clearCharBuffer ()
-            ok (Lexeme.Char str[0])
-
-        match charBuffer, inputChar with
-        | [], None -> ()
-        | [ _ ], None -> emitCurrentChar ()
-
-        | ['\'' ], Some '\\' ->
-            charBuffer <- []
-            state <- this.EscapeSeqState this.CharState
-
-        | [ _ ], Some '\'' ->
-            let result = emitCurrentChar ()
-            state <- this.InitialState
-            result
-        | ['\'' ], Some ch ->
-            charBuffer <- [ ch ]
-        | xs, input -> fail $"Error on parsing char lexeme. Char buffer: %A{xs}, input char: %A{input}."
-
-    member _.DotState inputChar =
-        match charBuffer, inputChar with
-        | [], None -> ()
-        | [ '.' ], None -> ok Lexeme.Dot
-
-        | [], Some _ -> fail "Empty buffer in DotState."
-        | [ '.' ], Some '.' ->
-            state <- this.InitialState
-            ok Lexeme.DoubleDot
-            clearCharBuffer ()
-        | [ '.' ], Some item ->
-            state <- this.InitialState
-            reader.Return item
-            clearCharBuffer ()
-            ok Lexeme.Dot
-        | buf, input -> fail $"Unexpected state. Char buffer: %A{buf}, input char: %A{input}"
-
-    member _. GetLexemes () : Result<Lexeme, string> seq =
-        seq {
-            let mutable inputChar = reader.TryNext ()
-
-            while Option.isSome inputChar do
-                state inputChar
-                inputChar <- reader.TryNext ()
-                match nextLexeme with
-                | Some item ->
-                    yield item
-                    nextLexeme <- None
+                match resultOption with
+                | Some result -> yield result
                 | None -> ()
 
-            state None
-            match nextLexeme with
-            | Some item -> yield item
-            | None -> ()
-
-            yield Ok EndOfFile
+                yield! returnChars ()
         }
 
+        for char in chars do
+            yield! returnChars ()
+            assert (List.isEmpty state.ReturnedChars)
 
-let charReaderFromTextReader (reader: System.IO.TextReader) =
-    let seq = seq {
-        let mutable input = reader.Read ()
-        while input <> -1 do
-            yield (char input)
-            input <- reader.Read ()
+            let newState, resultOption = state.State (Some char) state
+            state <- newState
+
+            match resultOption with
+            | Some result -> yield result
+            | None -> ()
+
+        yield! returnChars ()
+        assert (List.isEmpty state.ReturnedChars)
+
+        let _, resultOption = state.State None state
+        match resultOption with
+        | Some result -> yield result
+        | None -> ()
+
+        yield Ok { LexemeContainer.Lexeme = Lexeme.EndOfFile; Row = -1; Col = -1 }
     }
-    new SeqReader<char> (seq)
+    |> MSeq.takeUntilFirstError
 
-let charReaderFromStr str =
-    new SeqReader<char> (str :> char seq)
+let tokenizeFromString (str: string) =
+    let chars = textReaderToCharSeq (new System.IO.StringReader(str))
+    let indexesChars = indexedChars chars
 
-let tokenize reader =
-    let tokenizer = Tokenizer reader
-    tokenizer.GetLexemes ()
+    tokenize indexesChars

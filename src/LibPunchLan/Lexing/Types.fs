@@ -1,4 +1,4 @@
-﻿namespace LibPunchLan.Lexing
+﻿namespace rec LibPunchLan.Lexing
 
 type Lexeme =
     | Keyword of Keyword
@@ -27,29 +27,27 @@ type Lexeme =
     | GreaterThanOrEqual
     | EndOfFile
 
-and Keyword =
+type Keyword =
     | Open | As
     | Func | EndFunc
     | Struct | EndStruct
     | Union | EndUnion
-    | Enum | EndEnum
     | If | Then | ElseIf | Else | Fi
     | While | Do | EndWhile
     | For | In | EndFor
-    | Private
     | Return
     | Var
-    | Extern
+    | Extern | Export
     | Defer | EndDefer
 
     | Int8 | Uint8
     | Int16 | Uint16
     | Int32 | Uint32
+    | Int64 | Uint64
     | Double
     | Float
     | Char
     | Bool
-    | Sizet
     | Void
     | Pointer
     | Const
@@ -59,19 +57,24 @@ and Keyword =
     | And | Or | Not
     | Xor
 
-and Number =
+type Number =
     | Integer of DecInt array
     | HexInteger of HexInt array
     | BinaryInteger of BitInt array
     | Double of double
     | Negative of Number
 
-and DecInt =
+type DecInt =
     | Zero | One | Two | Three | Four
     | Five | Six | Seven | Eight | Nine
 
-and HexInt =
+type HexInt =
     | DecInt of DecInt
     | A | B | C | D | E | F
 
-and BitInt = Zero | One
+type BitInt = Zero | One
+
+type LexemeContainer =
+    { Lexeme: Lexeme
+      Row: int
+      Col: int }

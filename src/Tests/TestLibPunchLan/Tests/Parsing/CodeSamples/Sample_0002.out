@@ -4,17 +4,17 @@ var var2 : double = (3.1415)
 
 var var3 : int32 = ((1) + (2))
 
-var var4 : GenericFoo < int32, double, char >
+var var4 : GenericFoo
 
 var var5 : pointer<int32> = (0)
 
-var var6 : const GenericBar < pointer<int32> > = ("Hello")
+var var6 : const GenericBar = ("Hello")
 
 var Here_is_my_variable23123 : const int32 = ((2) + ((2) * (2)))
 
 var x : int32 = (((((1) + (2)) + (3)) + (4)) + (5))
 
-var x : Foo = ((((alias).path).lib).rnd ())
+var x : Foo = (rndlibalias.rnd ())
 
 var Person : Person = (Person {
 Name = ("Bob")
@@ -22,12 +22,12 @@ Age = (18)
 SomethingElse = (true)
 })
 
-var list : List < int > = (collections.List < int > {
+var list : List = (collections.List {
 Value = (1)
 Next = (null ())
 })
 
-var justSomething : GenericBar < List < Person > > = (GenericBar < List < Person > > {
+var justSomething : GenericBar = (GenericBar {
 Values = (getValues ((1), ("Bob")))
-Head = (initHead < GenericBar < List < Person > > > ((0)))
+Head = (initHead ((0)))
 })
