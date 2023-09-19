@@ -20,7 +20,7 @@ let codeSamples =
     let assembly = Assembly.GetAssembly typeof<CodeSample>.DeclaringType
     let inputSamples =
         assembly.GetManifestResourceNames ()
-        |> Array.filter (fun name -> Regex.IsMatch (name, "Sample_[0-9]+\.in"))
+        |> Array.filter (fun name -> Regex.IsMatch (name, "Parsing\\.CodeSamples\\.Sample_[0-9]+\\.in"))
 
     inputSamples
     |> Array.map (fun inputSampleName ->
@@ -41,6 +41,8 @@ let codeSamples =
 
 [<Test>]
 let ``Run all samples`` () =
+    Assert.That(Array.length codeSamples, Is.Not.Zero)
+
     for codeSample in codeSamples do
         match LL1.parseSourceFromString codeSample.Input with
         | Error err -> Assert.Fail (sprintf $"Error parsing '%s{codeSample.InputName}': %s{err}")

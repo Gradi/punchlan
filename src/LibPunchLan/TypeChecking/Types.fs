@@ -10,34 +10,18 @@ type Diagnostic =
       Function: Function option
       Message: string }
 
+        override this.ToString () =
+            let func =
+                match this.Function with
+                | Some func -> sprintf $":func %s{func.Name}"
+                | None -> ""
+
+            sprintf $"%s{this.Source.Filename}%s{func}: %s{this.Message}"
+
 type Diagnostics = Diagnostic list
 
 type SourceContext =
     { CurrentSource: Source
+      CurrentFunction: Function option
       Program: Program
       NameTypeEnv: Lazy<Map<string, TypeId>> }
-
-        member this.WithFunction (func: Function) =
-            { SourceFunctionContext.CurrentSource = this.CurrentSource
-              CurrentFunction = func
-              Program = this.Program
-              NameTypeEnv = this.NameTypeEnv
-              DeclaredVariables = lazy Set.empty }
-
-and SourceFunctionContext =
-    { CurrentSource: Source
-      CurrentFunction: Function
-      Program: Program
-      NameTypeEnv: Lazy<Map<string, TypeId>>
-      DeclaredVariables: Lazy<Set<string>> }
-
-        member this.WithSource () =
-            { SourceContext.CurrentSource = this.CurrentSource
-              Program = this.Program
-              NameTypeEnv = this.NameTypeEnv }
-
-        member this.WithTypeEnv name typ =
-            { this with NameTypeEnv = lazy (Map.add name typ this.NameTypeEnv.Value) }
-
-        member this.WithVariable name =
-            { this with DeclaredVariables = lazy (Set.add name this.DeclaredVariables.Value)}

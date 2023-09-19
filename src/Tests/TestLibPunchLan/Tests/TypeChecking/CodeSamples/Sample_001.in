@@ -1,0 +1,8 @@
+﻿func add(a: const int32, b: const int32) : int32
+    return a + b
+endfunc
+
+func add2(a: const int64, b: const int64) : int64
+    var i : const int64 = 123
+    return a + b 
+endfunc

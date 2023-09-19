@@ -8,6 +8,7 @@
     <Compile Include="Tests\Lexing\TestNumberMod.fs" />
     <Compile Include="Tests\Lexing\TestLexer.fs" />
     <Compile Include="Tests\Parsing\TestLL1.fs" />
+    <Compile Include="Tests\TypeChecking\TestTypeChecker.fs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -16,6 +17,10 @@
   
   <ItemGroup>
     <EmbeddedResource Include="Tests/Parsing/CodeSamples/**" />
+  </ItemGroup>
+  
+  <ItemGroup>
+    <EmbeddedResource Include="Tests/TypeChecking/CodeSamples/**" />
   </ItemGroup>
   
   <Import Project="../Tests.props" />

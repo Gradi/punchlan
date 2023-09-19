@@ -7,20 +7,24 @@
     <Compile Include="ResultM.fs" />
     <Compile Include="MList.fs" />
     <Compile Include="MSeq.fs" />
-    
+
     <Compile Include="Lexing\Types.fs" />
     <Compile Include="Lexing\NumberMod.fs" />
     <Compile Include="Lexing\Lexer.fs" />
-    
+
     <Compile Include="Parsing\Types.fs" />
     <Compile Include="Parsing\LL1M.fs" />
     <Compile Include="Parsing\LL1.fs" />
-    
+
     <Compile Include="StringifySyntaxTree.fs" />
-    
+
     <Compile Include="Comp.fs" />
-    
+
     <Compile Include="TypeChecking\Types.fs" />
-    
+
+    <Compile Include="TypeChecking\TypeCheckerM.fs" />
+
+    <Compile Include="TypeChecking\TypeChecker.fs" />
+
   </ItemGroup>
 </Project>
