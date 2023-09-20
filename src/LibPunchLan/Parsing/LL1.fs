@@ -328,6 +328,7 @@ module private rec Expressions =
 
 module private rec Statements =
     let parseStatements () = parser {
+        do! skipNewlines ()
         match! peek with
         | { Lexeme = Lexeme.Keyword Keyword.Var } ->
             let! stat = parseVarStatement ()

@@ -1,0 +1,4 @@
+﻿func test(a: int32, b: const int32)
+    var _ : int32 = a
+    var _ : int32 = b
+endfunc

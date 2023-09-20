@@ -1,0 +1,4 @@
+﻿
+func test(a: const int32)
+    var _ : const int32 = a
+endfunc

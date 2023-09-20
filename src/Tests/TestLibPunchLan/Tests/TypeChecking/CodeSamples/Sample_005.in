@@ -5,7 +5,7 @@ endstruct
 func performJob(f : const SomeStruct)
     var fconst : const SomeStruct = f
     performJob (fconst)
-    var f : SomeStruct = f
+    var f : SomeStruct
     performJob (f)
 endfunc
 

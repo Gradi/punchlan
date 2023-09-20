@@ -1,0 +1,7 @@
+﻿func test()
+    var constvar: const int32
+    var simplevar: int32
+    
+    simplevar = simplevar
+    simplevar = constvar
+endfunc
