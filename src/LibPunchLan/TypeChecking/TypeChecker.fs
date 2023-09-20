@@ -18,7 +18,6 @@ let numericTypes =
     t
     |> List.append (t |> List.map (fun t -> TypeId.Const t))
 
-
 let checkOpenDirectives () = tchecker {
     let! odis = getFromContext (fun c -> c.CurrentSource.OpenDirectives)
 
@@ -48,12 +47,18 @@ let checkUniqueDeclarations () = tchecker {
 }
 
 let checkNamedTypeIdExists (typ: TypeId) = tchecker {
-    match unwrapPointerAndConst typ with
+    match TypeId.unwrapPointerAndConst typ with
     | Named name ->
         let! _ = locateTypeDecl name
         yield ()
     | _ -> yield ()
 }
+
+let rec isExpressionConstant (expr: Expression) =
+    match expr with
+    | Constant _ -> true
+    | StructCreation (_, fields) -> fields |> List.map snd |> List.forall isExpressionConstant
+    | _ -> false
 
 let getArraySubitemType (typ: TypeId) = tchecker {
     match typ with
@@ -88,17 +93,18 @@ let rec getExpressionType (expr: Expression) = tchecker {
         let expectedArgs = List.length func.Args
         let actualArgs = List.length args
 
-        if expectedArgs <> actualArgs then yield! fatalDiag $"Function requires %d{expectedArgs} arguments, but actually supplied %d{actualArgs}"
+        if expectedArgs <> actualArgs then yield! diag $"Function requires %d{expectedArgs} arguments, but actually supplied %d{actualArgs}"
         else
-            for (number, (name, arguTyp)), actual in List.zip (List.indexed func.Args) args do
-                let! typ = getExpressionType actual
-                if typ <> arguTyp then yield! diag $"Function accepts \"%O{arguTyp}\" as %d{number}th argument, but actual %d{number}th argument is of \"%O{typ}\" type"
+            for (index, (arguName, arguType)), actualExpr in List.zip (List.indexed func.Args) args do
+                let! actualType = getExpressionType actualExpr
+                if not (TypeId.isTypesEqual arguType actualType) then
+                    yield! diag $"Function accepts \"%O{arguType}\" as %d{index}th(%s{arguName}) argument, but actual %d{index}th argument is of \"%O{actualType}\" type"
 
-            yield func.ReturnType
+        yield func.ReturnType
 
     | MemberAccess (left, field) ->
         let! typ = getExpressionType left
-        match unwrapPointerAndConst typ with
+        match TypeId.unwrapPointerAndConst typ with
         | Named name ->
             let! typeDecl = locateTypeDecl name
             match MList.tryLookup field typeDecl.Fields with
@@ -110,22 +116,26 @@ let rec getExpressionType (expr: Expression) = tchecker {
     | BinaryExpression (BinaryExpression.Minus (left, right)) ->
         let! leftTyp = getExpressionType left
         let! rightTyp = getExpressionType right
+        let leftTyp = TypeId.unwrapConst leftTyp
+        let rightTyp = TypeId.unwrapConst rightTyp
         if leftTyp <> rightTyp then yield! diag $"Arguments for operators '+', '-' has to be the same (%O{leftTyp}, %O{rightTyp})"
 
         if List.contains leftTyp numericTypes then yield ()
-        elif isPointerType leftTyp then yield ()
+        elif TypeId.isPointerType leftTyp then yield ()
         else
             yield! diag "Operators '+', '-' accept only numeric & pointer types"
 
-        yield unwrapConst leftTyp
+        yield leftTyp
 
     | BinaryExpression (BinaryExpression.Multiply (left, right))
     | BinaryExpression (BinaryExpression.Division (left, right)) ->
         let! leftTyp = getExpressionType left
         let! rightTyp = getExpressionType right
+        let leftTyp = TypeId.unwrapConst leftTyp
+        let rightTyp = TypeId.unwrapConst rightTyp
 
         if leftTyp <> rightTyp then yield! diag $"Arguments for operators '*', '/' has to be the same (%O{leftTyp}, %O{rightTyp})"
-        yield unwrapConst leftTyp
+        yield leftTyp
 
     | BinaryExpression (BinaryExpression.Equal (left, right))
     | BinaryExpression (BinaryExpression.NotEqual (left, right))
@@ -135,8 +145,8 @@ let rec getExpressionType (expr: Expression) = tchecker {
     | BinaryExpression (BinaryExpression.GreaterOrEqual (left, right)) ->
         let! leftTyp = getExpressionType left
         let! rightTyp = getExpressionType right
-        if unwrapConst leftTyp <> TypeId.Bool then yield! diag $"Left boolean comparison argument must be of type bool, not \%O{leftTyp}"
-        if unwrapConst rightTyp <> TypeId.Bool then yield! diag $"Right boolean comparison argument must be of type bool, not \%O{rightTyp}"
+        if TypeId.unwrapConst leftTyp <> TypeId.Bool then yield! diag $"Left boolean comparison argument must be of type bool, not \%O{leftTyp}"
+        if TypeId.unwrapConst rightTyp <> TypeId.Bool then yield! diag $"Right boolean comparison argument must be of type bool, not \%O{rightTyp}"
 
         yield TypeId.Bool
 
@@ -147,8 +157,8 @@ let rec getExpressionType (expr: Expression) = tchecker {
 
         if leftTyp <> rightTyp then yield! diag $"Arguments for operators 'or', 'and' has to be the same (%O{leftTyp}, %O{rightTyp})"
 
-        if List.contains leftTyp integerTypes then yield unwrapConst leftTyp
-        elif unwrapConst leftTyp = TypeId.Bool then yield TypeId.Bool
+        if List.contains leftTyp integerTypes then yield TypeId.unwrapConst leftTyp
+        elif TypeId.unwrapConst leftTyp = TypeId.Bool then yield TypeId.Bool
         else yield! fatalDiag $"Arguments for operators 'or', 'and' can be numeric or boolean, but found \"%O{leftTyp}\""
 
     | BinaryExpression (BinaryExpression.Xor (left, right))
@@ -156,17 +166,19 @@ let rec getExpressionType (expr: Expression) = tchecker {
     | BinaryExpression (BinaryExpression.LShift (left, right)) ->
         let! leftTyp = getExpressionType left
         let! rightTyp = getExpressionType right
+        let leftTyp = TypeId.unwrapConst leftTyp
+        let rightTyp = TypeId.unwrapConst rightTyp
         if leftTyp <> rightTyp then yield! diag $"Arguments for operators 'xor', '>>', '<<' has to be the same (%O{leftTyp}, %O{rightTyp})"
 
         if not (List.contains leftTyp numericTypes ) then yield! fatalDiag $"Arguments for operators 'xor, '>>', '<<' has to be of numeric type, but found \"%O{leftTyp}\""
-        yield unwrapConst leftTyp
+        yield leftTyp
 
     | ArrayAccess (array, indexExpr) ->
         let! arrayType = getExpressionType array
         let! indexType = getExpressionType indexExpr
         let! arraySubitemType = getArraySubitemType arrayType
 
-        if unwrapConst indexType <> TypeId.Int64 then yield! diag $"Array's index type must be int64, not \"%O{indexType}\""
+        if TypeId.unwrapConst indexType <> TypeId.Int64 then yield! diag $"Array's index type must be int64, not \"%O{indexType}\""
         yield arraySubitemType
 
     | StructCreation (name, fieldsInits) ->
@@ -183,8 +195,9 @@ let rec getExpressionType (expr: Expression) = tchecker {
 
     | Bininversion expr ->
         let! typ = getExpressionType expr
+        let typ = TypeId.unwrapConst typ
         if not (List.contains typ integerTypes) then yield! diag $"Operator '~' only accepts numeric types as argument, but not \"%O{typ}\""
-        yield TypeId.Const typ
+        yield typ
 }
 
 let rec checkFunctionStatement (statement: Statement) = tchecker {
@@ -194,14 +207,14 @@ let rec checkFunctionStatement (statement: Statement) = tchecker {
         match expr with
         | Some expr ->
             let! exprTyp = getExpressionType expr
-            if exprTyp <> typ then yield! diag $"Variables's \"%s{name}\" (\"%O{typ}\") init expression has different type \"%O{exprTyp}\""
+            if TypeId.unwrapConst exprTyp <> TypeId.unwrapConst typ then yield! diag $"Variables's \"%s{name}\" (\"%O{typ}\") init expression has different type \"%O{exprTyp}\""
         | None -> ()
 
     | VarAssignment (left, right) ->
         let! leftType = getExpressionType left
         let! rightType = getExpressionType right
         if leftType <> rightType then yield! diag $"Left(target) expression of assignment has type \"%O{leftType}\", but right part has \"%O{rightType}\""
-        if isConstType leftType then yield! diag $"You can't assign to a constant variable (\"%O{leftType}\")"
+        if TypeId.isConstType leftType then yield! diag $"You can't assign to a constant variable (\"%O{leftType}\")"
         match left with
         | Variable _
         | MemberAccess _
@@ -316,7 +329,7 @@ let checkTypeDeclaration (typ: TypeDecl) = tchecker {
     (* Check that type declaration doesn't have itself as a field somewhere deep in hierarchy *)
     let rec visitFields (typ: TypeDecl) = tchecker {
         for typ in typ.Fields |> List.map snd do
-            match unwrapConst typ with
+            match TypeId.unwrapAllConst typ with
             | Named name ->
                 let! typ = locateTypeDecl name
                 if not (visitedDecls.Contains typ) then

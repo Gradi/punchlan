@@ -1,0 +1,7 @@
+﻿#FAIL Type "Foo" has circular reference to itself within some of it
+
+struct Foo
+    field: int32
+    field2: bool
+    foo: Foo
+endstruct

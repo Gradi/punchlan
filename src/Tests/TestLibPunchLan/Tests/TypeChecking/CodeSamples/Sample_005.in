@@ -1,0 +1,15 @@
+﻿struct SomeStruct
+    field: const int32
+endstruct
+
+func performJob(f : const SomeStruct)
+    var fconst : const SomeStruct = f
+    performJob (fconst)
+    var f : SomeStruct = f
+    performJob (f)
+endfunc
+
+func func2(f: SomeStruct)
+    var f : SomeStruct = f
+    func2 (f)
+endfunc

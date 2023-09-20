@@ -1,0 +1,5 @@
+﻿#FAIL Type "Foo" has circular reference to itself within some of it
+
+struct Foo
+    foo: const const const const Foo
+endstruct

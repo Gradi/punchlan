@@ -19,12 +19,10 @@
     <Compile Include="StringifySyntaxTree.fs" />
 
     <Compile Include="Comp.fs" />
+    <Compile Include="TypeId.fs" />
 
     <Compile Include="TypeChecking\Types.fs" />
-
     <Compile Include="TypeChecking\TypeCheckerM.fs" />
-
     <Compile Include="TypeChecking\TypeChecker.fs" />
-
   </ItemGroup>
 </Project>

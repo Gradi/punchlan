@@ -1,0 +1,10 @@
+﻿#FAIL Function accepts "SomeStruct" as 0th\(f\) argument, but actual 0th argument is of "const SomeStruct" type
+
+struct SomeStruct
+    field: const int32
+endstruct
+
+func performJob(f : SomeStruct)
+    var fconst : const SomeStruct = f
+    performJob (fconst)
+endfunc

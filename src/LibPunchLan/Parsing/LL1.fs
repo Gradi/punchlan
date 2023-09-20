@@ -360,10 +360,20 @@ module private rec Statements =
             let! rest = parseStatements ()
             return stat :: rest
         | input when Expressions.isExpressionStart input.Lexeme ->
-            let! stat = parseExpressionStatement ()
+            let! stat = Expressions.parseExpression ()
+            let! right = parser {
+                match! peek with
+                | { Lexeme = Lexeme.Equal } ->
+                    do! consume Lexeme.Equal
+                    let! right = Expressions.parseExpression ()
+                    return Some right
+                | _ -> return None
+            }
             do! consume Lexeme.Newline
             let! rest = parseStatements ()
-            return stat :: rest
+            match right with
+            | Some right -> return (Statement.VarAssignment (stat, right)) :: rest
+            | None -> return (Statement.Expression stat) :: rest
         | _ -> return []
     }
 
@@ -470,11 +480,6 @@ module private rec Statements =
             let! expr = Expressions.parseExpression ()
             return Statement.ReturnExpr expr
         | _ -> return Statement.Return
-    }
-
-    let parseExpressionStatement () = parser {
-        let! expr = Expressions.parseExpression ()
-        return Statement.Expression expr
     }
 
 let parseStructUnionDeclaration () = parser {

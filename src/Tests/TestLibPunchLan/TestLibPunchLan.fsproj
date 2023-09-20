@@ -14,15 +14,15 @@
   <ItemGroup>
     <ProjectReference Include="..\..\LibPunchLan\LibPunchLan.fsproj" />
   </ItemGroup>
-  
+
   <ItemGroup>
-    <EmbeddedResource Include="Tests/Parsing/CodeSamples/**" />
+    <EmbeddedResource Include="Tests\Parsing\CodeSamples\**" />
   </ItemGroup>
-  
+
   <ItemGroup>
-    <EmbeddedResource Include="Tests/TypeChecking/CodeSamples/**" />
+    <EmbeddedResource Include="Tests\TypeChecking\CodeSamples\**" />
   </ItemGroup>
-  
+
   <Import Project="../Tests.props" />
 
 </Project>
