@@ -28,3 +28,8 @@ let getFunctionDeclarations (source: Source) =
         | Declaration.Variable _ -> None
         | Declaration.Type _ -> None)
     |> List.choose id
+
+let align value mul =
+    match value % mul with
+    | 0 -> value
+    | rem -> value + (mul - rem)

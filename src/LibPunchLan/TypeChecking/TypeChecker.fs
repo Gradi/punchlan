@@ -350,34 +350,84 @@ let checkSourceDeclarations () = tchecker {
         | Declaration.Type typ -> yield! checkTypeDeclaration typ
 }
 
+let rec getTypeIdSize (typ: TypeId) = tchecker {
+    match TypeId.unwrapAllConst typ with
+    | TypeId.Int8 | TypeId.Uint8 -> yield 1
+    | TypeId.Int16 | TypeId.Uint16 -> yield 2
+    | TypeId.Int32 | TypeId.Uint32 -> yield 4
+    | TypeId.Int64 | TypeId.Uint64 -> yield 8
+    | TypeId.Float -> yield 4
+    | TypeId.Double -> yield 8
+    | TypeId.Bool -> yield 8
+    | TypeId.Char -> yield 1
+    | TypeId.Void -> yield 0
+    | TypeId.Pointer _ -> yield 8
+    | TypeId.Named name ->
+        let! typeDecl = locateTypeDecl name
+        match typeDecl.TypeType with
+        | TypeType.Struct ->
+            let mutable size = 0
+            for _, typ in typeDecl.Fields do
+                let! typeSize = getTypeIdSize typ
+                size <-  size + (align typeSize 8)
+            yield size
+        | TypeType.Union ->
+            let mutable size = 0
+            for _, typ in typeDecl.Fields do
+                let! typeSize = getTypeIdSize typ
+                size <- max size typeSize
+            yield align size 8
+    | typ -> yield failwithf $"This type id should have been covered: %O{typ}"
+}
+
+let makeContext (source: Source) (program: Program) =
+    let ctx = { CurrentSource = source
+                CurrentFunction = None
+                Program = program
+                NameTypeEnv= lazy Map.empty  }
+
+    let folder env source =
+        source
+        |> getVariableDeclarations
+        |> List.fold (fun env variable -> (Map.add variable.Name variable.TypeId env)) env
+
+    match getImplicitlyReferencedSources ctx with
+    | Ok (sources, xs)->
+        assert List.isEmpty xs
+        let env = lazy (
+                let env =
+                    sources @ [ source ]
+                    |> List.fold folder Map.empty
+                env
+            )
+        Ok { ctx with NameTypeEnv = env }
+    | Error errors -> Error errors
+
+let runtchecker (source: Source) (program: Program) m =
+    let diags2str diags =
+        let diags = diags |> List.map (fun d -> d.ToString())
+        String.concat "\n" diags
+
+    match makeContext source program with
+    | Ok context ->
+        match m context with
+        | Ok (result, []) -> result
+        | Ok (_, xs)
+        | Error xs ->
+            failwithf $"Type checker unexpectedly failed: %s{diags2str xs}"
+    | Error error -> failwithf $"Type checker unexpectedly failed: %s{diags2str error}"
 
 let typeCheckProgram (program: Program) =
     let checkSource (source: Source) =
-        let ctx = { CurrentSource = source
-                    CurrentFunction = None
-                    Program = program
-                    NameTypeEnv= lazy (Map.empty)  }
-
-        let folder env source =
-            source
-            |> getVariableDeclarations
-            |> List.fold (fun env variable -> lazy (Map.add variable.Name variable.TypeId env.Value)) env
-
-        match getImplicitlyReferencedSources ctx with
-        | Ok (sources, xs)->
-            assert List.isEmpty xs
-            let env =
-                sources @ [ source ]
-                |> List.fold folder (lazy (Map.empty))
-            let ctx = { ctx with NameTypeEnv = env }
-            let tChecker = tchecker {
-                do! checkOpenDirectives ()
-                do! checkUniqueDeclarations ()
-                do! checkSourceDeclarations ()
-            }
-
-            tChecker ctx
-        | Error diags -> Error diags
+            match makeContext source program with
+            | Ok context ->
+                let tChecker = tchecker {
+                    do! checkOpenDirectives ()
+                    do! checkUniqueDeclarations ()
+                    do! checkSourceDeclarations ()
+                }
+                tChecker context
+            | Error errors -> Error errors
 
     let checks =
         program.Sources

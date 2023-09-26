@@ -152,7 +152,7 @@ let locateFunctionDecl (name: DotString) = tchecker {
     }
 
     match funcs |> List.filter (fun f -> f.Name = name.Name) with
-    | [] -> yield! fatalDiag $"Can't find function named \"%O{name}"
+    | [] -> yield! fatalDiag $"Can't find function named \"%O{name}\""
     | [ f ] -> yield f
     | fs -> yield! fatalDiag $"Found more than 1 (%d{List.length fs}) functions named \"%O{name}\""
 }

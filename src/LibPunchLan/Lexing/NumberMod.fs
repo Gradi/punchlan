@@ -132,3 +132,19 @@ let rec numToStr (number: Number): string =
         sb.Append (numToStr num) |> ignore
 
     sb.ToString ()
+
+let rec getNumberSign (number: Number) =
+    match number with
+    | Integer _
+    | HexInteger _
+    | BinaryInteger _-> 1
+    | Double dbl -> if dbl >= 0.0 then 1 else -1
+    | Negative num -> -1 * getNumberSign num
+
+let rec unwrapNegative (number: Number) =
+    match number with
+    | Integer _
+    | HexInteger _
+    | BinaryInteger _
+    | Double _ -> number
+    | Negative num -> unwrapNegative num
