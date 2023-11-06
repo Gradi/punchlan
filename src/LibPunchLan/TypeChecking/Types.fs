@@ -2,9 +2,11 @@
 
 open LibPunchLan.Parsing
 
+[<NoComparison;ReferenceEquality>]
 type Program =
     { Sources: Source list }
 
+[<NoComparison;ReferenceEquality>]
 type Diagnostic =
     { Source: Source
       Function: Function option
@@ -20,8 +22,54 @@ type Diagnostic =
 
 type Diagnostics = Diagnostic list
 
+
+[<NoComparison;ReferenceEquality>]
+type VarRef =
+    { Variable: Variable
+      Source: Source }
+
+    override this.ToString () = sprintf $"%s{this.Source.Filename}:%s{this.Variable.Name}"
+
+[<NoComparison;ReferenceEquality>]
+type FuncRef =
+    { Function: Function
+      Source: Source }
+
+    override this.ToString () = sprintf $"%s{this.Source.Filename}:%s{this.Function.Name}"
+
+[<NoComparison;ReferenceEquality>]
+type TypeRef =
+    { TypeId: TypeId
+      Source: Source }
+
+    override this.ToString () = sprintf $"%s{this.Source.Filename}:%O{this.TypeId}"
+
+[<NoComparison;ReferenceEquality>]
+type TypeDeclRef =
+    { TypeDecl: TypeDecl
+      Source: Source }
+
+    override this.ToString () = sprintf $"%s{this.Source.Filename}:%s{this.TypeDecl.Name}"
+
+[<NoComparison;ReferenceEquality>]
 type SourceContext =
     { CurrentSource: Source
-      CurrentFunction: Function option
       Program: Program
-      NameTypeEnv: Lazy<Map<string, TypeId>> }
+      NameTypeEnv: Lazy<Map<string, TypeRef>> }
+
+    member this.WithFunction (func: Function) =
+        { SourceFunctionContext.CurrentSource = this.CurrentSource
+          CurrentFunction = func
+          Program = this.Program
+          NameTypeEnv = this.NameTypeEnv }
+
+and SourceFunctionContext =
+    { CurrentSource: Source
+      CurrentFunction: Function
+      Program: Program
+      NameTypeEnv: Lazy<Map<string, TypeRef>> }
+
+    member this.WithSource () =
+        { SourceContext.CurrentSource = this.CurrentSource
+          Program = this.Program
+          NameTypeEnv = this.NameTypeEnv }

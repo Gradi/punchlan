@@ -1,6 +1,4 @@
-﻿#FAIL Function accepts "SomeStruct" as 0th\(f\) argument, but actual 0th argument is of "const SomeStruct" type
-
-struct SomeStruct
+﻿struct SomeStruct
     field: const int32
 endstruct
 

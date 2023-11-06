@@ -6,7 +6,7 @@ open LibPunchLan.Comp
 open LibPunchLan.Parsing
 open LibPunchLan.Lexing
 
-let checkOpenDirectives () = tchecker {
+let checkOpenDirectives () : TypeCheckerM.M<SourceContext, unit> = tchecker {
     let! odis = getFromContext (fun c -> c.CurrentSource.OpenDirectives)
 
     let paths = odis |> List.map (fun od -> od.Path) |> MList.duplicates
@@ -16,7 +16,7 @@ let checkOpenDirectives () = tchecker {
     if not (List.isEmpty aliases) then yield! diag $"Source contains duplicated open aliases: %A{aliases}"
 }
 
-let checkUniqueDeclarations () = tchecker {
+let checkUniqueDeclarations () : TypeCheckerM.M<SourceContext, unit> = tchecker {
     let! source = getFromContext (fun c -> c.CurrentSource)
 
     let varsAndFuncs =
@@ -34,7 +34,7 @@ let checkUniqueDeclarations () = tchecker {
     if not (List.isEmpty types) then yield! diag $"Source contains duplicated type names: %A{types}"
 }
 
-let checkNamedTypeIdExists (typ: TypeId) = tchecker {
+let checkNamedTypeIdExists (typ: TypeId) : TypeCheckerM.M<SourceContext, unit> = tchecker {
     match TypeId.unwrapPointerAndConst typ with
     | Named name ->
         let! _ = locateTypeDecl name
@@ -48,7 +48,7 @@ let rec isExpressionConstant (expr: Expression) =
     | StructCreation (_, fields) -> fields |> List.map snd |> List.forall isExpressionConstant
     | _ -> false
 
-let getArraySubitemType (typ: TypeId) = tchecker {
+let getArraySubitemType (typ: TypeId) : TypeCheckerM.M<SourceContext, TypeId> = tchecker {
     match typ with
     | TypeId.Pointer typ -> yield typ
     | TypeId.Const (TypeId.Pointer typ) -> yield typ
@@ -63,13 +63,30 @@ let rec getNumberType (num: Number) =
     | Number.Double _ -> TypeId.Double
     | Negative num -> getNumberType num
 
-let rec getExpressionType (expr: Expression) = tchecker {
+let isStructVariableWithMember (name: string) memberName (context: SourceContext ) : bool =
+    match Map.tryFind name context.NameTypeEnv.Value with
+    | Some variableTypeId ->
+        match TypeId.unwrapPointerAndConst variableTypeId.TypeId with
+        | Named typename ->
+            match locateTypeDecl typename { context with CurrentSource = variableTypeId.Source } with
+            | Ok (typeDecl, []) ->
+                match MList.tryLookup memberName typeDecl.TypeDecl.Fields with
+                | Some _ -> true
+                | None -> false
+            | Ok _
+            | Error _ -> false
+        | _ -> false
+    | None -> false
+
+let rec getExpressionType (expr: Expression) : TypeCheckerM.M<SourceContext, TypeRef> = tchecker {
     let! context = context
+    let! source = getFromContext (fun c -> c.CurrentSource)
+
     match expr with
-    | Constant (Value.String _) -> yield (TypeId.Pointer (TypeId.Const TypeId.Char))
-    | Constant (Value.Number num) -> yield getNumberType num
-    | Constant (Value.Boolean _) -> yield TypeId.Bool
-    | Constant (Value.Char _) -> yield TypeId.Char
+    | Constant (Value.String _) -> yield { TypeId = TypeId.Pointer (TypeId.Const TypeId.Char); Source = source }
+    | Constant (Value.Number num) -> yield { TypeId = getNumberType num; Source = source }
+    | Constant (Value.Boolean _) -> yield { TypeId = TypeId.Bool; Source = source }
+    | Constant (Value.Char _) -> yield { TypeId = TypeId.Char; Source = source }
 
     | Variable name ->
         match Map.tryFind name context.NameTypeEnv.Value with
@@ -78,60 +95,83 @@ let rec getExpressionType (expr: Expression) = tchecker {
 
     | FuncCall (name, args) ->
         let! func = locateFunctionDecl name
-        let expectedArgs = List.length func.Args
-        let actualArgs = List.length args
+        let expectedArgsCount = List.length func.Function.Args
+        let actualArgsCount = List.length args
 
-        if expectedArgs <> actualArgs then yield! diag $"Function requires %d{expectedArgs} arguments, but actually supplied %d{actualArgs}"
+        if expectedArgsCount <> actualArgsCount then yield! diag $"Function requires %d{expectedArgsCount} arguments, but actually supplied %d{actualArgsCount}"
         else
-            for (index, (arguName, arguType)), actualExpr in List.zip (List.indexed func.Args) args do
+            let funcArgs = func.Function.Args |> List.map (fun (name, typ) -> (name, { TypeRef.TypeId = typ; Source = func.Source }))
+
+            for (index, (arguName, arguType)), actualExpr in List.zip (List.indexed funcArgs) args do
                 let! actualType = getExpressionType actualExpr
                 if not (TypeId.isTypesEqual arguType actualType) then
                     yield! diag $"Function accepts \"%O{arguType}\" as %d{index}th(%s{arguName}) argument, but actual %d{index}th argument is of \"%O{actualType}\" type"
 
-        yield func.ReturnType
+        yield { TypeId = func.Function.ReturnType; Source = func.Source }
+
+    | MemberAccess (Variable name, memberName)
+        when (isStructVariableWithMember name memberName context) ->
+        let variableTypeId = Map.find name context.NameTypeEnv.Value
+        match TypeId.unwrapPointerAndConst variableTypeId.TypeId with
+        | Named typename ->
+            let! typeDecl = checkWithContext' (fun c -> { c with CurrentSource = variableTypeId.Source }) (locateTypeDecl typename)
+            match MList.tryLookup memberName typeDecl.TypeDecl.Fields with
+            | Some fieldType -> yield { TypeId = fieldType; Source = typeDecl.Source }
+            | None -> yield failwithf "Should not happen as case covered by isStructVariableWithMember"
+        | _ -> yield failwithf "Should not happen as case covered by isStructVariableWithMember"
+
+    | MemberAccess (Variable alias, name) when getAliasedSource alias context |> Result.isOk ->
+        let! varDecl = locateVariableDecl { Name = name; Alias = Some alias }
+        yield { TypeId = varDecl.Variable.TypeId; Source = varDecl.Source }
 
     | MemberAccess (left, field) ->
         let! typ = getExpressionType left
-        match TypeId.unwrapPointerAndConst typ with
+        match TypeId.unwrapPointerAndConst typ.TypeId with
         | Named name ->
             let! typeDecl = locateTypeDecl name
-            match MList.tryLookup field typeDecl.Fields with
-            | Some typ -> yield typ
-            | None -> yield! fatalDiag $"Type \"%s{typeDecl.Name}\" doesn't have field \"%s{field}\""
+            match MList.tryLookup field typeDecl.TypeDecl.Fields with
+            | Some typE -> yield { TypeId = typE; Source = typeDecl.Source }
+            | None -> yield! fatalDiag $"Type \"%O{typeDecl}\" doesn't have field \"%s{field}\""
         | _ -> yield! fatalDiag $"Type \"%O{typ}\" is not struct/union and thus doesn't have field \"%s{field}\""
 
     | BinaryExpression (BinaryExpression.Plus (left, right))
     | BinaryExpression (BinaryExpression.Minus (left, right)) ->
-        let! leftTyp = getExpressionType left
-        let! rightTyp = getExpressionType right
-        let leftTyp = TypeId.unwrapConst leftTyp
-        let rightTyp = TypeId.unwrapConst rightTyp
+        let! leftType  = getExpressionType left
+        let! rightType = getExpressionType right
+        let leftTyp = leftType.TypeId
+        let rightTyp = rightType.TypeId
 
-        (* If (left or rigt types are pointer types) AND (right or left types are numeric) it means
+        (* If (left is pointer AND right is numeric) OR (left is numeric AND right is pointer) it means
            we are dealing with pointer arithmetics *)
-        if (TypeId.isPointerType leftTyp || TypeId.isPointerType rightTyp) &&
-           (List.contains leftTyp TypeId.integerTypes || List.contains rightTyp TypeId.integerTypes) then yield ()
+        if (TypeId.isPointerType leftTyp && TypeId.isUnsigned rightTyp) then yield leftType
+        elif (TypeId.isPointerType rightTyp && TypeId.isUnsigned leftTyp) then yield rightType
         else
 
-            if not (TypeId.isTypesEqual leftTyp rightTyp) then
+            if not (TypeId.isTypesEqual leftType rightType) then
                 yield! diag $"Arguments for operators '+', '-' has to be the same (%O{leftTyp}, %O{rightTyp})"
 
-            if not (List.contains leftTyp TypeId.numericTypes) then
+            if not (TypeId.isNumericType leftTyp) then
                 yield! diag "Operators '+', '-' accept only numeric & pointer types"
 
-        yield leftTyp
+            if TypeId.isUnsigned leftTyp then yield { leftType with TypeId = TypeId.Uint64 }
+            elif TypeId.isSigned leftTyp then yield { leftType with TypeId = TypeId.Int64 }
+            elif TypeId.isFloat leftTyp then yield { leftType with TypeId = TypeId.Double }
+            else yield! fatalDiag $"Can't determine result type of '%O{leftType} (+ -) '%O{rightType}' operation."
 
     | BinaryExpression (BinaryExpression.Multiply (left, right))
     | BinaryExpression (BinaryExpression.Division (left, right)) ->
-        let! leftTyp = getExpressionType left
-        let! rightTyp = getExpressionType right
-        let leftTyp = TypeId.unwrapConst leftTyp
-        let rightTyp = TypeId.unwrapConst rightTyp
+        let! leftType = getExpressionType left
+        let! rightType = getExpressionType right
+        let leftTyp = TypeId.unwrapConst leftType.TypeId
+        let rightTyp = TypeId.unwrapConst rightType.TypeId
 
-        if not (TypeId.isTypesEqual leftTyp rightTyp) then
+        if not (TypeId.isTypesEqual leftType rightType) then
             yield! diag $"Arguments for operators '*', '/' has to be the same (%O{leftTyp}, %O{rightTyp})"
 
-        yield leftTyp
+        if TypeId.isUnsigned leftTyp then yield { leftType with TypeId = TypeId.Uint64 }
+        elif TypeId.isSigned leftTyp then yield { leftType with TypeId = TypeId.Int64 }
+        elif TypeId.isFloat leftTyp then yield { leftType with TypeId = TypeId.Double }
+        else yield! fatalDiag $"Can't determine result type of '%O{leftType} (* /) %O{rightType}' operation."
 
     | BinaryExpression (BinaryExpression.Equal (left, right))
     | BinaryExpression (BinaryExpression.NotEqual (left, right))
@@ -141,10 +181,10 @@ let rec getExpressionType (expr: Expression) = tchecker {
     | BinaryExpression (BinaryExpression.GreaterOrEqual (left, right)) ->
         let! leftTyp = getExpressionType left
         let! rightTyp = getExpressionType right
-        if TypeId.unwrapConst leftTyp <> TypeId.Bool then yield! diag $"Left boolean comparison argument must be of type bool, not \%O{leftTyp}"
-        if TypeId.unwrapConst rightTyp <> TypeId.Bool then yield! diag $"Right boolean comparison argument must be of type bool, not \%O{rightTyp}"
+        if TypeId.unwrapConst leftTyp.TypeId <> TypeId.Bool then yield! diag $"Left boolean comparison argument must be of type bool, not \%O{leftTyp}"
+        if TypeId.unwrapConst rightTyp.TypeId <> TypeId.Bool then yield! diag $"Right boolean comparison argument must be of type bool, not \%O{rightTyp}"
 
-        yield TypeId.Bool
+        yield { TypeId = TypeId.Bool; Source = source }
 
     | BinaryExpression (BinaryExpression.Or (left, right))
     | BinaryExpression (BinaryExpression.And (left, right)) ->
@@ -154,74 +194,81 @@ let rec getExpressionType (expr: Expression) = tchecker {
         if not (TypeId.isTypesEqual leftTyp rightTyp) then
             yield! diag $"Arguments for operators 'or', 'and' has to be the same (%O{leftTyp}, %O{rightTyp})"
 
-        if List.contains leftTyp TypeId.integerTypes then yield TypeId.unwrapConst leftTyp
-        elif TypeId.unwrapConst leftTyp = TypeId.Bool then yield TypeId.Bool
-        else yield! fatalDiag $"Arguments for operators 'or', 'and' should be numeric or boolean, but found \"%O{leftTyp}\""
+        if TypeId.isUnsigned leftTyp.TypeId then yield { leftTyp with TypeId = TypeId.Uint64 }
+        elif TypeId.isSigned leftTyp.TypeId then yield { leftTyp with TypeId = TypeId.Int64 }
+        elif TypeId.isBool leftTyp.TypeId then yield { leftTyp with TypeId = TypeId.Bool }
+        else yield! fatalDiag $"Can't determine result type of '%O{leftTyp} (or and) '%O{rightTyp}' operation."
 
     | BinaryExpression (BinaryExpression.Xor (left, right))
     | BinaryExpression (BinaryExpression.RShift (left, right))
     | BinaryExpression (BinaryExpression.LShift (left, right)) ->
         let! leftTyp = getExpressionType left
         let! rightTyp = getExpressionType right
-        let leftTyp = TypeId.unwrapConst leftTyp
-        let rightTyp = TypeId.unwrapConst rightTyp
-        if not (TypeId.isTypesEqual leftTyp rightTyp) then yield! diag $"Arguments for operators 'xor', '>>', '<<' has to be the same (%O{leftTyp}, %O{rightTyp})"
 
-        if not (List.contains leftTyp TypeId.numericTypes ) then yield! fatalDiag $"Arguments for operators 'xor, '>>', '<<' has to be of numeric type, but found \"%O{leftTyp}\""
-        yield leftTyp
+        if not (TypeId.isTypesEqual leftTyp rightTyp) then
+            yield! diag $"Arguments for operators 'xor', '>>', '<<' has to be the same (%O{leftTyp}, %O{rightTyp})"
+
+        if TypeId.isUnsigned leftTyp.TypeId then yield { leftTyp with TypeId = TypeId.Uint64 }
+        elif TypeId.isSigned rightTyp.TypeId then yield { leftTyp with TypeId = TypeId.Int64 }
+        else yield! fatalDiag $"Can't determine result type of '%O{leftTyp} (>> <<) %O{rightTyp}' operation."
 
     | ArrayAccess (array, indexExpr) ->
         let! arrayType = getExpressionType array
         let! indexType = getExpressionType indexExpr
-        let! arraySubitemType = getArraySubitemType arrayType
+        let! arraySubitemType = getArraySubitemType arrayType.TypeId
 
-        if TypeId.unwrapConst indexType <> TypeId.Int64 then yield! diag $"Array's index type must be int64, not \"%O{indexType}\""
-        yield arraySubitemType
+        if TypeId.unwrapConst indexType.TypeId <> TypeId.Int64 then yield! diag $"Array's index type must be int64, not \"%O{indexType}\""
+        yield { TypeId = arraySubitemType; Source = arrayType.Source }
 
     | StructCreation (name, fieldsInits) ->
         let! typeType = locateTypeDecl name
 
         for field, expr in fieldsInits do
-            let! typ = getExpressionType expr
-            match MList.tryLookup field typeType.Fields with
+            let! rightType = getExpressionType expr
+            match MList.tryLookup field typeType.TypeDecl.Fields with
             | Some actualFieldType ->
-                if typ <> actualFieldType then yield! diag $"Field \"%s{field}\" of \"%O{name}\" has type \"%O{actualFieldType}\" but init expression has type \"%O{typ}\""
+                let leftType = { TypeId = actualFieldType; Source = typeType.Source }
+                if not (TypeId.isTypesEqual leftType rightType) then yield! diag $"Field \"%s{field}\" of \"%O{name}\" has type \"%O{leftType}\" but init expression has type \"%O{rightType}\""
             | None -> yield! diag $"Type \"%O{name}\" doesn't have field \"%s{field}\""
 
-        yield TypeId.Named name
+        yield { TypeId = TypeId.Named name; Source = typeType.Source }
 
     | Bininversion expr ->
         let! typ = getExpressionType expr
-        let typ = TypeId.unwrapConst typ
-        if not (List.contains typ TypeId.integerTypes) then yield! diag $"Operator '~' only accepts numeric types as argument, but not \"%O{typ}\""
+        let typE = TypeId.unwrapConst typ.TypeId
+        if not (List.contains typE TypeId.integerTypes) then yield! diag $"Operator '~' only accepts numeric types as argument, but not \"%O{typ}\""
         yield typ
 }
 
-let rec checkFunctionStatement (statement: Statement) = tchecker {
+let rec checkFunctionStatement (statement: Statement) : TypeCheckerM.M<SourceFunctionContext, unit> = tchecker {
+    let! source = getFromContext (fun c -> c.CurrentSource)
+    let! sourceContext = getFromContext (fun c -> c.WithSource ())
+
     match statement with
     | Statement.VarDecl (name, typ, expr) ->
-        do! checkNamedTypeIdExists typ
+        do! checkWithContext sourceContext (checkNamedTypeIdExists typ)
         match expr with
         | Some expr ->
-            let! exprTyp = getExpressionType expr
-            if not (TypeId.isTypesEqual typ exprTyp) then yield! diag $"Variables's \"%s{name}\" (\"%O{typ}\") init expression has different type \"%O{exprTyp}\""
+            let! exprTyp = checkWithContext sourceContext (getExpressionType expr)
+            let variableType = { TypeId = typ; Source = source }
+            if not (TypeId.isTypesEqual variableType exprTyp) then yield! diag' $"Variables's \"%s{name}\" (\"%O{variableType}\") init expression has different type \"%O{exprTyp}\""
         | None -> ()
 
     | Statement.VarAssignment (left, right) ->
-        let! leftType = getExpressionType left
-        let! rightType = getExpressionType right
-        if not (TypeId.isTypesEqual leftType rightType) then yield! diag $"Left(target) expression of assignment has type \"%O{leftType}\", but right part has \"%O{rightType}\""
-        if TypeId.isConstType leftType then yield! diag $"You can't assign to a constant variable (\"%O{leftType}\")"
+        let! leftType = checkWithContext sourceContext (getExpressionType left)
+        let! rightType = checkWithContext sourceContext (getExpressionType right)
+        if not (TypeId.isTypesEqual leftType rightType) then yield! diag' $"Left(target) expression of assignment has type \"%O{leftType}\", but right part has \"%O{rightType}\""
+        if TypeId.isConstType leftType.TypeId then yield! diag' $"You can't assign to a constant variable (\"%O{leftType}\")"
         match left with
         | Variable _
         | MemberAccess _
         | ArrayAccess _ -> ()
-        | _ -> yield! diag "You can only assign to variable, member access, array access expressions."
+        | _ -> yield! diag' "You can only assign to variable, member access, array access expressions."
 
     | Statement.If (main, elseIfs, elsE) ->
-        let checkIfCond cond = tchecker {
-            let! exprType = getExpressionType cond.Condition
-            if exprType <> TypeId.Bool then yield! diag $"'if' condition must be of type bool, but fond \"%O{exprType}\""
+        let checkIfCond cond : TypeCheckerM.M<SourceFunctionContext, unit> = tchecker {
+            let! exprType = checkWithContext sourceContext (getExpressionType cond.Condition)
+            if exprType.TypeId <> TypeId.Bool then yield! diag' $"'if' condition must be of type bool, but fond \"%O{exprType}\""
             do! checkStatementList cond.Body
         }
         do! checkIfCond main
@@ -230,73 +277,74 @@ let rec checkFunctionStatement (statement: Statement) = tchecker {
         do! checkStatementList elsE
 
     | Statement.For (name, startExpr, endExpr, stepExpr, body) ->
-        let! startType = getExpressionType startExpr
-        let! endType = getExpressionType endExpr
+        let! startType = checkWithContext sourceContext (getExpressionType startExpr)
+        let! endType = checkWithContext sourceContext (getExpressionType endExpr)
 
-        if startType <> TypeId.Int64 then yield! diag $"For loop's start value must be of type int64, but found \"%O{startType}\""
-        if endType <> TypeId.Int64 then yield! diag $"For loop's end value must be of type int64, but found \"%O{endType}\""
+        if startType.TypeId <> TypeId.Int64 then yield! diag' $"For loop's start value must be of type int64, but found \"%O{startType}\""
+        if endType.TypeId <> TypeId.Int64 then yield! diag' $"For loop's end value must be of type int64, but found \"%O{endType}\""
 
         match stepExpr with
         | Some expr ->
-            let! typ = getExpressionType expr
-            if typ <> TypeId.Int64 then yield! diag $"For loop's step value must be of type int64, but found \"%O{typ}\""
+            let! typ = checkWithContext sourceContext (getExpressionType expr)
+            if typ.TypeId <> TypeId.Int64 then yield! diag' $"For loop's step value must be of type int64, but found \"%O{typ}\""
         | None -> ()
 
-        let! context = getFromContext (fun c -> { c with NameTypeEnv = lazy (Map.add name TypeId.Int64 c.NameTypeEnv.Value) })
+        let! context = getFromContext (fun c -> { c with NameTypeEnv = lazy (Map.add name { TypeId = TypeId.Int64; Source = source } c.NameTypeEnv.Value) })
         do! checkWithContext context (checkStatementList body)
 
     | Statement.While (condition, body) ->
-        let! exprType = getExpressionType condition
-        if exprType <> TypeId.Bool then yield! diag $"While's condition must be of type bool, but found \"%O{exprType}\""
+        let! exprType = checkWithContext sourceContext (getExpressionType condition)
+        if exprType.TypeId <> TypeId.Bool then yield! diag' $"While's condition must be of type bool, but found \"%O{exprType}\""
         do! checkStatementList body
 
     | Statement.Defer body ->
         do! checkStatementList body
 
     | Statement.Return ->
-        let! func = getFuncFromContext
-        if func.ReturnType <> TypeId.Void then yield! diag $"Function return type must be void in order to return nothing, but current return type is \"%O{func.ReturnType}\""
+        let! func = getFromContext (fun c -> c.CurrentFunction)
+        if func.ReturnType <> TypeId.Void then yield! diag' $"Function return type must be void in order to return nothing, but current return type is \"%O{func.ReturnType}\""
 
     | Statement.ReturnExpr expr ->
-        let! typ = getExpressionType expr
-        let! func = getFuncFromContext
-        if typ <> func.ReturnType then yield! diag $"Function's return type is \"%O{func.ReturnType}\" but return statement's type is \"%O{typ}\""
+        let! typ = checkWithContext sourceContext (getExpressionType expr)
+        let! func = getFromContext (fun c -> c.CurrentFunction)
+        if not (TypeId.isTypesEqual typ { TypeId = func.ReturnType; Source = sourceContext.CurrentSource }) then yield! diag' $"Function's return type is \"%O{func.ReturnType}\" but return statement's type is \"%O{typ}\""
 
     | Statement.Expression expr ->
-        let! _ = getExpressionType expr
+        let! _ = checkWithContext sourceContext (getExpressionType expr)
         match expr with
         | FuncCall _ -> ()
-        | _ -> yield! diag "Only function call expression is allowed as statement."
+        | _ -> yield! diag' "Only function call expression is allowed as statement."
 
 }
 
-and checkStatementList (stats: Statement list) = tchecker {
+and checkStatementList (stats: Statement list) : TypeCheckerM.M<SourceFunctionContext, unit> = tchecker {
+    let! context = context
     let folder (xs, context) statement =
         let xs = xs @ [ fun () -> checkWithContext context (checkFunctionStatement statement) ]
         let context =
             match statement with
-            | VarDecl (name, typeId, _) -> { context with NameTypeEnv = lazy (Map.add name typeId context.NameTypeEnv.Value) }
+            | VarDecl (name, typeId, _) -> { context with NameTypeEnv = lazy (Map.add name { TypeId = typeId; Source = context.CurrentSource } context.NameTypeEnv.Value) }
             | _ -> context
         (xs, context)
 
-    let! context = context
     let checks, _ = stats |> List.fold folder ([], context)
     for check in checks do
         do! check ()
 }
 
-let checkVariableDeclaration (variable: Variable) = tchecker {
+let checkVariableDeclaration (variable: Variable) : TypeCheckerM.M<SourceContext, unit> = tchecker {
+    let! source = getFromContext (fun c -> c.CurrentSource)
     do! checkNamedTypeIdExists variable.TypeId
 
     match variable.InitExpr with
     | Some expr ->
         let! exprType = getExpressionType expr
-        if not (TypeId.isTypesEqual variable.TypeId exprType) then yield! diag $"Variable \"%s{variable.Name}\" has type \"%O{variable.TypeId}\", but init expr has type \"%O{exprType}\""
+        if not (TypeId.isTypesEqual { TypeId = variable.TypeId; Source = source } exprType) then yield! diag $"Variable \"%s{variable.Name}\" has type \"%O{variable.TypeId}\", but init expr has type \"%O{exprType}\""
         if not (isExpressionConstant expr) then yield! diag $"Variable's \"%s{variable.Name}\" init expression must be constant."
     | None -> ()
 }
 
-let checkFunctionDeclaration (func: Function) = tchecker {
+let checkFunctionDeclaration (func: Function) : TypeCheckerM.M<SourceContext, unit> = tchecker {
     for typ in func.Args |> List.map snd do
         do! checkNamedTypeIdExists typ
 
@@ -305,16 +353,18 @@ let checkFunctionDeclaration (func: Function) = tchecker {
 
     do! checkNamedTypeIdExists func.ReturnType
 
-    let! context = getFromContext (fun c -> { c with CurrentFunction = Some func })
-    let env =
-        func.Args
-        |> List.fold (fun env (field, typ) -> lazy (Map.add field typ env.Value)) context.NameTypeEnv
+    let! source = getFromContext (fun c -> c.CurrentSource)
+    let! context = getFromContext (fun c -> c.WithFunction func)
+    let env = lazy (
+            func.Args
+            |> List.fold (fun env (field, typ) -> Map.add field { TypeId = typ; Source = source } env) context.NameTypeEnv.Value
+        )
     let context = { context with NameTypeEnv = env }
 
     do! checkWithContext context (checkStatementList func.Body)
 }
 
-let checkTypeDeclaration (typ: TypeDecl) = tchecker {
+let checkTypeDeclaration (typ: TypeDecl) : TypeCheckerM.M<SourceContext, unit> = tchecker {
     let duplicatedFields = typ.Fields |> List.map fst |> MList.duplicates
     if not (List.isEmpty duplicatedFields) then yield! diag $"Type \"%s{typ.Name}\" has duplicated fields: %A{duplicatedFields}"
 
@@ -324,24 +374,25 @@ let checkTypeDeclaration (typ: TypeDecl) = tchecker {
     let visitedDecls = System.Collections.Generic.HashSet<TypeDecl> ()
 
     (* Check that type declaration doesn't have itself as a field somewhere deep in hierarchy *)
-    let rec visitFields (typ: TypeDecl) = tchecker {
-        for typ in typ.Fields |> List.map snd do
-            match TypeId.unwrapAllConst typ with
+    let rec visitFields (typRef: TypeDeclRef) = tchecker {
+        for typ in typRef.TypeDecl.Fields |> List.map snd do
+            match TypeId.unwrapConst typ with
             | Named name ->
-                let! typ = locateTypeDecl name
-                if not (visitedDecls.Contains typ) then
-                    (visitedDecls.Add typ) |> ignore
+                let! typ = checkWithContext' (fun c -> { c with SourceContext.CurrentSource = typRef.Source}) (locateTypeDecl name)
+                if not (visitedDecls.Contains typ.TypeDecl) then
+                    (visitedDecls.Add typ.TypeDecl) |> ignore
                     do! visitFields typ
             | _ -> ()
     }
 
-    do! visitFields typ
+    let! source = getFromContext (fun c -> c.CurrentSource)
+    do! visitFields { TypeDecl = typ; Source = source }
 
     if visitedDecls.Contains typ then
             yield! diag $"Type \"%s{typ.Name}\" has circular reference to itself within some of it's fields (eg, 'struct Foo {{ foo: Foo }}')"
 }
 
-let checkSourceDeclarations () = tchecker {
+let checkSourceDeclarations () : TypeCheckerM.M<SourceContext, unit>  = tchecker {
     let! decls = getFromContext (fun c -> c.CurrentSource.Declarations)
     for decl in decls do
         match decl with
@@ -350,8 +401,8 @@ let checkSourceDeclarations () = tchecker {
         | Declaration.Type typ -> yield! checkTypeDeclaration typ
 }
 
-let rec getTypeIdSize (typ: TypeId) = tchecker {
-    match TypeId.unwrapAllConst typ with
+let rec getTypeIdSize (typ: TypeRef) : TypeCheckerM.M<SourceContext, int> = tchecker {
+    match TypeId.unwrapConst typ.TypeId with
     | TypeId.Int8 | TypeId.Uint8 -> yield 1
     | TypeId.Int16 | TypeId.Uint16 -> yield 2
     | TypeId.Int32 | TypeId.Uint32 -> yield 4
@@ -363,44 +414,44 @@ let rec getTypeIdSize (typ: TypeId) = tchecker {
     | TypeId.Void -> yield 0
     | TypeId.Pointer _ -> yield 8
     | TypeId.Named name ->
-        let! typeDecl = locateTypeDecl name
-        match typeDecl.TypeType with
+        let! typeDecl = checkWithContext' (fun c -> { c with CurrentSource = typ.Source }) (locateTypeDecl name)
+        match typeDecl.TypeDecl.TypeType with
         | TypeType.Struct ->
             let mutable size = 0
-            for _, typ in typeDecl.Fields do
-                let! typeSize = getTypeIdSize typ
+            for _, typ in typeDecl.TypeDecl.Fields do
+                let! typeSize = getTypeIdSize { TypeId = typ; Source = typeDecl.Source }
                 size <-  size + (align typeSize 8)
             yield size
         | TypeType.Union ->
             let mutable size = 0
-            for _, typ in typeDecl.Fields do
-                let! typeSize = getTypeIdSize typ
+            for _, typ in typeDecl.TypeDecl.Fields do
+                let! typeSize = getTypeIdSize { TypeId = typ; Source = typeDecl.Source }
                 size <- max size typeSize
             yield align size 8
     | typ -> yield failwithf $"This type id should have been covered: %O{typ}"
 }
 
+let getExpressionSize expression = tchecker {
+    let! exprType = getExpressionType expression
+    let! size = getTypeIdSize exprType
+    yield size
+}
+
 let makeContext (source: Source) (program: Program) =
     let ctx = { CurrentSource = source
-                CurrentFunction = None
                 Program = program
                 NameTypeEnv= lazy Map.empty  }
 
     let folder env source =
         source
         |> getVariableDeclarations
-        |> List.fold (fun env variable -> (Map.add variable.Name variable.TypeId env)) env
+        |> List.fold (fun env variable -> (Map.add variable.Name { TypeId = variable.TypeId; Source = source } env)) env
 
     match getImplicitlyReferencedSources ctx with
-    | Ok (sources, xs)->
-        assert List.isEmpty xs
-        let env = lazy (
-                let env =
-                    sources @ [ source ]
-                    |> List.fold folder Map.empty
-                env
-            )
+    | Ok (sources, [])->
+        let env = lazy ( sources @ [ source ] |> List.fold folder Map.empty )
         Ok { ctx with NameTypeEnv = env }
+    | Ok (_, errors)
     | Error errors -> Error errors
 
 let runtchecker (source: Source) (program: Program) m =

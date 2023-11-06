@@ -54,12 +54,24 @@ let tchecker = TypeCheckerCE ()
 let diag msg (context: SourceContext) =
     let msg = sprintf msg
     let dia = { Diagnostic.Source = context.CurrentSource
-                Function = context.CurrentFunction
+                Function = None
                 Message = msg }
     Ok ((),  [ dia ])
 
 let fatalDiag msg (context: SourceContext) =
     match diag msg context with
+    | Ok ((), diags) -> Error diags
+    | Error diags -> Error diags
+
+let diag' msg (context: SourceFunctionContext) =
+    let msg = sprintf msg
+    let dia = { Diagnostic.Source = context.CurrentSource
+                Function = Some context.CurrentFunction
+                Message = msg }
+    Ok ((), [ dia ])
+
+let fatalDiag' msg (context: SourceFunctionContext) =
+    match diag' msg context with
     | Ok ((), diags) -> Error diags
     | Error diags -> Error diags
 
@@ -69,12 +81,9 @@ let getFromContext f ctx = Ok (f ctx, [])
 
 let checkWithContext context m = (fun _ -> m context)
 
-let getFuncFromContext (context: SourceContext) =
-    match context.CurrentFunction with
-    | Some func -> Ok (func, [])
-    | None -> failwith "Context's current function is not set. Should not happen."
+let checkWithContext' f m = (fun context -> m (f context))
 
-let getAliasedSource (alias: string) = tchecker {
+let getAliasedSource (alias: string) : M<SourceContext, Source> = tchecker {
     if System.String.IsNullOrWhiteSpace alias then
         yield! fatalDiag "Source alias is null or empty or whitespace"
 
@@ -96,7 +105,7 @@ let getAliasedSource (alias: string) = tchecker {
         | paths -> yield! fatalDiag $"Found more than 1 (%d{List.length paths}) paths for alias \"%s{alias}\""
 }
 
-let getImplicitlyReferencedSources = tchecker {
+let getImplicitlyReferencedSources : M<SourceContext, Source list> = tchecker {
     let! context = context
 
     let sources =
@@ -108,51 +117,79 @@ let getImplicitlyReferencedSources = tchecker {
     yield sources
 }
 
-let locateTypeDecl (name: DotString) = tchecker {
+let locateTypeDecl (name: DotString) : M<SourceContext, TypeDeclRef> = tchecker {
     let! types = tchecker {
         match name with
         | { Alias = Some alias } ->
             let! source = getAliasedSource alias
-
-            source |> getTypeDeclarations
-
+            yield source |> getTypeDeclarations |> List.map (fun t -> { TypeDeclRef.TypeDecl = t; Source = source })
         | { Alias = None } ->
             let! sources = getImplicitlyReferencedSources
             let! source = getFromContext (fun c -> c.CurrentSource)
             let sources = source :: (List.rev sources)
-
-            sources |> List.collect getTypeDeclarations
+            yield sources |> List.collect (fun source -> source |> getTypeDeclarations |> List.map (fun t -> { TypeDeclRef.TypeDecl = t; Source = source }))
     }
 
-    let types =
-        types
-        |> List.filter (fun t -> t.Name = name.Name)
-
+    let types = types |> List.filter (fun tref -> tref.TypeDecl.Name = name.Name)
     match types with
     | [] -> yield! fatalDiag $"Can't find type named \"%O{name}\""
     | [ typ ] -> yield typ
     | types -> yield! fatalDiag $"Found more than 1 (%d{List.length types}) types named \"%O{name}\""
 }
 
-let locateFunctionDecl (name: DotString) = tchecker {
+let locateFunctionDecl (name: DotString) : M<SourceContext, FuncRef> = tchecker {
     let! funcs = tchecker {
         match name with
         | { Alias = Some alias } ->
             let! source = getAliasedSource alias
-
-            yield source |> getFunctionDeclarations
+            yield source |> getFunctionDeclarations |> List.map (fun f -> { FuncRef.Function = f; Source = source })
         | { Alias = None } ->
             let! source = getFromContext (fun c -> c.CurrentSource)
             let! sources = getImplicitlyReferencedSources
             let sources = source :: (List.rev sources)
-
-            yield
-                sources
-                |> List.collect (fun s -> s |> getFunctionDeclarations)
+            yield sources |> List.collect (fun source -> getFunctionDeclarations source |> List.map (fun f -> { FuncRef.Function = f; Source = source }))
     }
 
-    match funcs |> List.filter (fun f -> f.Name = name.Name) with
+    match funcs |> List.filter (fun fref -> fref.Function.Name = name.Name) with
     | [] -> yield! fatalDiag $"Can't find function named \"%O{name}\""
     | [ f ] -> yield f
     | fs -> yield! fatalDiag $"Found more than 1 (%d{List.length fs}) functions named \"%O{name}\""
 }
+
+let locateVariableDecl (name: DotString) : M<SourceContext, VarRef> = tchecker {
+    let! variables = tchecker {
+        match name with
+        | { Alias = Some alias } ->
+            let! source = getAliasedSource alias
+            yield source |> getVariableDeclarations |> List.map (fun v -> { VarRef.Variable = v; Source = source })
+        | { Alias = None } ->
+            let! sources = getImplicitlyReferencedSources
+            let! source = getFromContext (fun c -> c.CurrentSource)
+            let sources = source :: (List.rev sources)
+            yield sources |> List.collect (fun source -> source |> getVariableDeclarations |> List.map (fun v -> { VarRef.Variable = v; Source = source }))
+    }
+
+    match variables |> List.filter (fun vref -> vref.Variable.Name = name.Name) with
+    | [] -> yield! fatalDiag $"Can't find variables with name \"%O{name}\""
+    | [ variable ] -> yield variable
+    | variables -> yield! fatalDiag $"Found more than 1 (%d{List.length variables}) variables with name \"%O{name}\""
+}
+
+let unwrapList (list: M<'a, 'b> list) : M<'a,  'b list> = (fun context ->
+    let folder results m =
+        match results with
+        | Ok results ->
+            match m context with
+            | Ok (value, []) -> Ok (results @ [ value ])
+            | Ok (_, diags) -> Error diags
+            | Error diags -> Error diags
+        | Error diags -> Error diags
+
+    match list |> List.fold folder (Ok []) with
+    | Ok results -> Ok (results, [])
+    | Error diags -> Error diags
+    )
+
+let diags2Str (diags: Diagnostics) =
+    let diags = diags |> List.map (fun d -> d.ToString ())
+    String.concat "\n\t" diags

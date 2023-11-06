@@ -1,6 +1,4 @@
-﻿#FAIL Variables's "_" \("Bar"\) init expression has different type "const Bar"
-
-struct Bar
+﻿struct Bar
     field: int32
 endstruct
 
