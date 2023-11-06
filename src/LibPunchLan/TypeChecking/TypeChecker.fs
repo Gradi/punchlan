@@ -181,8 +181,8 @@ let rec getExpressionType (expr: Expression) : TypeCheckerM.M<SourceContext, Typ
     | BinaryExpression (BinaryExpression.GreaterOrEqual (left, right)) ->
         let! leftTyp = getExpressionType left
         let! rightTyp = getExpressionType right
-        if TypeId.unwrapConst leftTyp.TypeId <> TypeId.Bool then yield! diag $"Left boolean comparison argument must be of type bool, not \%O{leftTyp}"
-        if TypeId.unwrapConst rightTyp.TypeId <> TypeId.Bool then yield! diag $"Right boolean comparison argument must be of type bool, not \%O{rightTyp}"
+        if not (TypeId.isBool leftTyp.TypeId) then yield! diag $"Left boolean comparison argument must be of type bool, not \%O{leftTyp}"
+        if not (TypeId.isBool rightTyp.TypeId) then yield! diag $"Right boolean comparison argument must be of type bool, not \%O{rightTyp}"
 
         yield { TypeId = TypeId.Bool; Source = source }
 
@@ -268,7 +268,7 @@ let rec checkFunctionStatement (statement: Statement) : TypeCheckerM.M<SourceFun
     | Statement.If (main, elseIfs, elsE) ->
         let checkIfCond cond : TypeCheckerM.M<SourceFunctionContext, unit> = tchecker {
             let! exprType = checkWithContext sourceContext (getExpressionType cond.Condition)
-            if exprType.TypeId <> TypeId.Bool then yield! diag' $"'if' condition must be of type bool, but fond \"%O{exprType}\""
+            if not (TypeId.isBool exprType.TypeId) then yield! diag' $"'if' condition must be of type bool, but fond \"%O{exprType}\""
             do! checkStatementList cond.Body
         }
         do! checkIfCond main
@@ -294,7 +294,7 @@ let rec checkFunctionStatement (statement: Statement) : TypeCheckerM.M<SourceFun
 
     | Statement.While (condition, body) ->
         let! exprType = checkWithContext sourceContext (getExpressionType condition)
-        if exprType.TypeId <> TypeId.Bool then yield! diag' $"While's condition must be of type bool, but found \"%O{exprType}\""
+        if not (TypeId.isBool exprType.TypeId) then yield! diag' $"While's condition must be of type bool, but found \"%O{exprType}\""
         do! checkStatementList body
 
     | Statement.Defer body ->
