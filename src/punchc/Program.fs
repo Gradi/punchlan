@@ -45,7 +45,7 @@ let getSourceSearchPaths (rootfilepath: string) =
     else [ rootfiledir; stdlibdir ]
 
 let normPath (path: string) =
-    let path =path.Replace ('/', Path.DirectorySeparatorChar)
+    let path = path.Replace ('/', Path.DirectorySeparatorChar)
     sprintf $"%s{path}.pl"
 
 let rec parseSources (filepath: string) (sourceFilename: string) (searchPaths: string list) = result {
@@ -122,7 +122,6 @@ let main argv =
                     use textWriter = new StreamWriter (bufferedStream)
                     let codegen: ICodegenerator = NasmCodegenerator.NasmCodegenerator (textWriter, program)
                     codegen.Write ()
-
                     textWriter.Flush ()
                     printStopwatch stopwatch "code generation"
                     0
