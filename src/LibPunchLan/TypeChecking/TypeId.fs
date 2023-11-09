@@ -60,6 +60,11 @@ let isBool (typ: TypeId) =
     | Bool -> true
     | _ -> false
 
+let isVoid (typ: TypeId) =
+    match unwrapConst typ with
+    | Void -> true
+    | _ -> false
+
 let isTypesEqual (expected: TypeRef) (actual: TypeRef) : bool =
     let left = expected.TypeId
     let right = actual.TypeId

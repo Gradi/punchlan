@@ -17,16 +17,19 @@ type Backend =
 
 type CommandLineArgs =
     | [<Mandatory; Unique; CustomCommandLine("-f")>] Input of string
-    | Backend of Backend
     | [<Mandatory; Unique; CustomCommandLine("-o")>] Output of string
+    | Backend of Backend
+    | [<CustomCommandLine("--nasm-call-conv")>] NasmCallConv of NasmCodegenerator.CallingConvention
 
     interface IArgParserTemplate with
 
         member this.Usage =
             match this with
             | Input _ -> "specifies main(starting) source file"
-            | Backend _ -> "specifies target codegen backend. Defaults to Nasm"
             | Output _ -> "specifies output filename"
+            | Backend _ -> "specifies target codegen backend. Defaults to Nasm"
+            | NasmCallConv _ -> "specifies calling convention for Nasm codegenerator. Defaults to 'Microsoft x64'"
+
 
 
 let visitiedSources = HashSet<string> (System.StringComparer.InvariantCulture)
@@ -84,6 +87,7 @@ let main argv =
     try
 
         let stopwatch = System.Diagnostics.Stopwatch.StartNew ()
+        let totalStopwatch = System.Diagnostics.Stopwatch.StartNew ()
         let commandLine = ArgumentParser.Create<CommandLineArgs>().ParseCommandLine argv
         printStopwatch stopwatch "command line parsing"
         stopwatch.Restart ()
@@ -120,10 +124,12 @@ let main argv =
                         | name -> File.Open (name, FileMode.Create, FileAccess.Write)
                     use bufferedStream = new BufferedStream (outputFilestream)
                     use textWriter = new StreamWriter (bufferedStream)
-                    let codegen: ICodegenerator = NasmCodegenerator.NasmCodegenerator (textWriter, program)
+                    let callconv = commandLine.GetResult (CommandLineArgs.NasmCallConv, NasmCodegenerator.CallingConvention.MicrosoftX64)
+                    let codegen: ICodegenerator = NasmCodegenerator.NasmCodegenerator (textWriter, program, callconv)
                     codegen.Write ()
                     textWriter.Flush ()
                     printStopwatch stopwatch "code generation"
+                    printStopwatch totalStopwatch "total time"
                     0
 
             | diags ->

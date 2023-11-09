@@ -415,19 +415,15 @@ let rec getTypeIdSize (typ: TypeRef) : TypeCheckerM.M<SourceContext, int> = tche
     | TypeId.Pointer _ -> yield 8
     | TypeId.Named name ->
         let! typeDecl = checkWithContext' (fun c -> { c with CurrentSource = typ.Source }) (locateTypeDecl name)
+        let! fieldSizes =
+            typeDecl.TypeDecl.Fields
+            |> List.map snd
+            |> List.map (fun t -> getTypeIdSize { TypeId = t; Source = typeDecl.Source })
+            |> unwrapList
+
         match typeDecl.TypeDecl.TypeType with
-        | TypeType.Struct ->
-            let mutable size = 0
-            for _, typ in typeDecl.TypeDecl.Fields do
-                let! typeSize = getTypeIdSize { TypeId = typ; Source = typeDecl.Source }
-                size <-  size + (align typeSize 8)
-            yield size
-        | TypeType.Union ->
-            let mutable size = 0
-            for _, typ in typeDecl.TypeDecl.Fields do
-                let! typeSize = getTypeIdSize { TypeId = typ; Source = typeDecl.Source }
-                size <- max size typeSize
-            yield align size 8
+        | TypeType.Struct -> yield fieldSizes |> List.sumBy (fun s -> align s 8)
+        | TypeType.Union -> yield align (List.max fieldSizes ) 8
     | typ -> yield failwithf $"This type id should have been covered: %O{typ}"
 }
 
@@ -453,20 +449,6 @@ let makeContext (source: Source) (program: Program) =
         Ok { ctx with NameTypeEnv = env }
     | Ok (_, errors)
     | Error errors -> Error errors
-
-let runtchecker (source: Source) (program: Program) m =
-    let diags2str diags =
-        let diags = diags |> List.map (fun d -> d.ToString())
-        String.concat "\n" diags
-
-    match makeContext source program with
-    | Ok context ->
-        match m context with
-        | Ok (result, []) -> result
-        | Ok (_, xs)
-        | Error xs ->
-            failwithf $"Type checker unexpectedly failed: %s{diags2str xs}"
-    | Error error -> failwithf $"Type checker unexpectedly failed: %s{diags2str error}"
 
 let typeCheckProgram (program: Program) =
     let checkSource (source: Source) =

@@ -24,6 +24,10 @@ type StackAllocator () =
         totalBytesAllocated <- totalBytesAllocated + size
         Map.add name -totalBytesAllocated env
 
+    member _.AllocateAnonymousVar (size: int) =
+            totalBytesAllocated <- totalBytesAllocated + size
+            -totalBytesAllocated
+
     member _.AllocateLabel suffix =
         let label = sprintf $"%%$lbl%d{labelCount}_%s{suffix}"
         labelCount <- labelCount + 1
@@ -123,141 +127,105 @@ let getFieldOffsetSizeType (typ: TypeDeclRef) (name: string) : TypeCheckerM.M<Na
 }
 
 
+/// Copy from address (located at top of stack) to stack
 let writeCopyToStack (typ: TypeRef) : TypeCheckerM.M<NasmContext, unit> = tchecker {
-    do! bprintfn """
-mov rax, 0
-pop rax"""
+    do! bprintfn "mov rax, 0"
+    do! bprintfn "pop rax"
     match TypeId.unwrapConst typ.TypeId with
     | TypeId.Uint8
     | TypeId.Char ->
-        do! bprintfn """
-movzx rax, byte [rax]
-push rax"""
+        do! bprintfn "movzx rax, byte [rax]"
+        do! bprintfn "push rax"
     | TypeId.Uint16 ->
-        do! bprintfn """
-movzx rax, word [rax]
-push rax"""
+        do! bprintfn "movzx rax, word [rax]"
+        do! bprintfn "push rax"
     | TypeId.Uint32 ->
-        do! bprintfn """
-movxz rax, dword [rax]
-push rax"""
+        do! bprintfn "movxz rax, dword [rax]"
+        do! bprintfn "push rax"
     | TypeId.Uint64 ->
-        do! bprintfn """
-mov rax, qword [rax]
-push rax"""
+        do! bprintfn "mov rax, qword [rax]"
+        do! bprintfn "push rax"
     | TypeId.Int8 ->
-        do! bprintfn """
-movsx rax, byte [rax]
-push rax"""
+        do! bprintfn "movsx rax, byte [rax]"
+        do! bprintfn "push rax"
     | TypeId.Int16 ->
-        do! bprintfn """
-movsx rax, word [rax]
-push rax"""
+        do! bprintfn "movsx rax, word [rax]"
+        do! bprintfn "push rax"
     | TypeId.Int32 ->
-        do! bprintfn """
-movsx rax, dword [rax]
-push rax"""
+        do! bprintfn "movsx rax, dword [rax]"
+        do! bprintfn "push rax"
     | TypeId.Int64
     | TypeId.Bool
     | TypeId.Pointer _ ->
-        do! bprintfn """
-mov rax, qword [rax]
-push rax"""
+        do! bprintfn "mov rax, qword [rax]"
+        do! bprintfn "push rax"
     | TypeId.Void -> yield! sourceFuncContext (fatalDiag' "Can't copy to stack void type.")
     | TypeId.Float ->
-        do! bprintfn """
-fld dword [rax]
-sub rsp, 8
-fstp qword [rsb]"""
+        do! bprintfn "fld dword [rax]"
+        do! bprintfn "sub rsp, 8"
+        do! bprintfn "fstp qword [rsp]"
     | TypeId.Double ->
-        do! bprintfn """
-mov rax, qword [rax]
-push rax"""
+        do! bprintfn "mov rax, qword [rax]"
+        do! bprintfn "push rax"
     | TypeId.Const _  as typ -> yield! sourceFuncContext (fatalDiag' $"Const(%O{typ}) should have been removed at this point.")
     | TypeId.Named typename  ->
         let! size = sourceContext (getTypeIdSize typ)
-        let! allocator = getFromContext (fun c -> c.Allocator)
-        let beginLabel = allocator.AllocateLabel "named_type_copy_begin"
-        let againLabel = allocator.AllocateLabel "named_type_copy_again"
-        let endLabel = allocator.AllocateLabel "named_type_copy_end"
-        do! bprintfn $"""
-;;; Copying struct\union '%O{typ}' of %d{size} bytes size
-sub rsp, %d{align size 8} ; Aligned %d{size} to 8 bytes
-mov rbx, 0
-jmp %s{beginLabel}
-%s{againLabel}:
-add rbx, 1
-%s{beginLabel}:
-cmp rbx, %d{size}
-je %s{endLabel}
-mov rcx, 0
-mov rcx, byte [rax+rbx]
-mov byte [rsp+rbx] rcx
-jmp $s{againLabel}
-%s{endLabel}:
-;;; End of copying struct\union '%O{typ}' of %d{size} size"""
+        do! bprintfn $"sub rsp %d{align size 8}"
+        do! bprintfn $"push %d{size}"
+        do! bprintfn "push rsp"
+        do! bprintfn "push rax"
+        do! bprintfn "memcopy"
 }
 
+/// Copy from stack to address (which is located on top of stack)
 let writeCopyFromStack (typ: TypeRef) : TypeCheckerM.M<NasmContext, unit> = tchecker {
-    do! bprintfn """
-mov rax, 0
-pop rax"""
+    do! bprintfn "mov rax, 0"
+    do! bprintfn "pop rax"
 
     match TypeId.unwrapConst typ.TypeId with
     | TypeId.Char
     | TypeId.Int8
     | TypeId.Uint8 ->
-        do! bprintfn """
-mov rbx, 0
-pop rbx
-mov byte [rax], rbx"""
+        do! bprintfn "mov rbx, 0"
+        do! bprintfn "pop rbx"
+        do! bprintfn "mov byte [rax], bl"
     | TypeId.Int16
     | TypeId.Uint16 ->
-        do! bprintfn """
-mov rbx, 0
-pop rbx
-mov word [rax], rbx"""
+        do! bprintfn "mov rbx, 0"
+        do! bprintfn "pop rbx"
+        do! bprintfn "mov word [rax], bx"
     | TypeId.Int32
     | TypeId.Uint32
     | TypeId.Float ->
-        do! bprintfn """
-mov rbx, 0
-pop rbx
-mov dword [rax], rbx"""
+        do! bprintfn "mov rbx, 0"
+        do! bprintfn "pop rbx"
+        do! bprintfn "mov dword [rax], ebx"
     | TypeId.Int64
     | TypeId.Uint64
     | TypeId.Double
     | TypeId.Pointer _
     | TypeId.Bool ->
-        do! bprintfn """
-mov rbx, 0
-pop rbx
-mov qword [rax], rbx"""
+        do! bprintfn "mov rbx, 0"
+        do! bprintfn "pop rbx"
+        do! bprintfn "mov qword [rax], rbx"
     | TypeId.Void -> yield! sourceFuncContext (fatalDiag' "Type 'void' cannot be copied from stack.")
     | TypeId.Named typename ->
         let! size = sourceContext (getTypeIdSize typ)
-        let! endOfCopy = getFromContext (fun c -> c.Allocator.AllocateLabel "copy_end")
-        let! again = getFromContext (fun c -> c.Allocator.AllocateLabel "copy_next_byte")
-
-        do! bprintfn $"""
-;;; Copying '%O{typ}' from stack
-mov rbx, 0
-%s{again}:
-cmp rbx, %d{size}
-je %s{endOfCopy}
-mov rcx, 0
-mov rcx, byte [rsp+rbx]
-mov byte [rax+rbx], rcx
-inc rbx
-jmp %s{again}
-%s{endOfCopy}:
-add rsp, %d{align size 8}
-;;; End of copying '%O{typ}' from stack"""
+        do! bprintfn $"push %d{size}"
+        do! bprintfn "push rax"
+        do! bprintfn "push rsp"
+        do! bprintfn $"add rsp, %d{align size 8}"
     | typ -> failwithf $"Type '%O{typ}' should have been covered"
 }
 
+let nasmTrueConst = "0ffffffffffffffffh"
+let nasmFalseConst = "00h"
 
-type NasmCodegenerator (tw: TextWriter, program: Program) =
+type CallingConvention =
+    | MicrosoftX64
+    | SysVX64
+
+type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConvention) =
 
     let fprintf text = Printf.fprintf tw text
     let fprintfn text =
@@ -272,33 +240,25 @@ type NasmCodegenerator (tw: TextWriter, program: Program) =
 
         | Expression.Constant (Value.String str) ->
             let stringLabel = getStringLabel str
-            do! bprintfn $"""
-mov rax, 0
-lea rax, byte [%s{stringLabel}]push rax
-"""
+            do! bprintfn "mov rax, 0"
+            do! bprintfn $"lea rax, byte [%s{stringLabel}]"
+            do! bprintfn "push rax"
 
         | Expression.Constant (Value.Boolean bool) ->
             let boolStr =
                 match bool with
-                | true -> "ffffffffffffffffh"
-                | false -> "00h"
-            do! bprintfn $"""
-mov rax, 0
-mov rax, %s{boolStr}
-push rax"""
+                | true -> nasmTrueConst
+                | false -> nasmFalseConst
+            do! bprintfn $"push %s{boolStr}"
 
         | Expression.Constant (Value.Char char) ->
-            do! bprintfn $"""
-mov rax, 0
-mov rax, %x{byte char}h
-push rax"""
+            do! bprintfn $"push %x{int char}"
 
         | Expression.Constant (Value.Number number) ->
             let number = number2nasm number
-            do! bprintfn $"""
-mov rax, 0
-mov rax, %s{number}
-push rax"""
+            do! bprintfn "mov rax, 0"
+            do! bprintfn $"mov rax, %s{number}"
+            do! bprintfn "push rax"
 
         | Expression.Variable name as expression ->
             let! exprType = sourceContext (getExpressionType expression)
@@ -307,13 +267,40 @@ push rax"""
 
         | Expression.FuncCall (name, args) ->
             let! func = sourceContext (locateFunctionDecl name)
+            let! funcReturnSize = sourceContext (getTypeIdSize { TypeId = func.Function.ReturnType; Source = func.Source})
+            let funcReturnSizeFitsReg = 1 <= funcReturnSize && funcReturnSize <= 8
+            let! allocator = getFromContext (fun c -> c.Allocator)
+            let resultPointerRequired = not (TypeId.isVoid func.Function.ReturnType) && not funcReturnSizeFitsReg
+
             match func.Function.Modifier with
             | None
             | Some Modifier.Export ->
                 for expression in List.rev args do
                     do! writeExpression expression
+
+                let returnValuePtr = if resultPointerRequired
+                                     then allocator.AllocateAnonymousVar (align funcReturnSize 8)
+                                     else 0
+
+                if resultPointerRequired then
+                    do! bprintfn $"lea rax, qword [rbp-%d{returnValuePtr}]"
+                    do! bprintfn "push rax"
+
                 let label = getLabel' name.Name func.Source
                 do! bprintfn $"call %s{label}"
+
+                match TypeId.isVoid func.Function.ReturnType with
+                | true -> ()
+                | false when funcReturnSizeFitsReg ->
+                    do! bprintfn "push rax"
+                | false ->
+                    do! bprintfn $"sub rsp, %d{align funcReturnSize 8}"
+                    do! bprintfn $"push %d{funcReturnSize}"
+                    do! bprintfn "push rsp"
+                    do! bprintfn $"lea rax, qword [rbp-%d{returnValuePtr}]"
+                    do! bprintfn "push rax"
+                    do! bprintfn "memcopy"
+
             | Some Modifier.Extern ->
                 failwith "Extern functions to be implemented."
 
@@ -325,21 +312,20 @@ push rax"""
                 let! typeDecl = checkWithContext' (fun c -> { c.WithSource () with CurrentSource = typ.Source }) (locateTypeDecl typename)
                 let! fieldOffset, fieldSize, fieldType = getFieldOffsetSizeType typeDecl memberName
                 do! writeExpressionAddress leftExpr
-                do! bprintfn $"""
-mov rax, 0
-pop rax
-add rax, %d{fieldOffset}
-push rax"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn $"add rax, %d{fieldOffset}"
+                do! bprintfn "push rax"
+                do! writeCopyToStack fieldType
             | typ -> failwithf $"'%O{typ}' should have been already covered."
 
         | Expression.MemberAccess (Expression.Variable alias, name) when getAliasedSource alias ssourceContext |> Result.isOk ->
             let! varDecl = sourceContext (locateVariableDecl { Name = name; Alias = Some alias })
             let! size = sourceContext (getTypeIdSize { TypeId = varDecl.Variable.TypeId; Source  = varDecl.Source })
             let label = getLabel varDecl.Variable.Name varDecl.Source varDecl.Variable.Modifier
-            do! bprintfn $"""
-mov rax, 0
-lea rax, byte [%s{label}]
-push rax"""
+            do! bprintfn "mov rax, 0"
+            do! bprintfn $"lea rax, qword [%s{label}]"
+            do! bprintfn "push rax"
             do! writeCopyToStack { TypeId = varDecl.Variable.TypeId; Source = varDecl.Source }
 
         | Expression.MemberAccess (left, name) ->
@@ -349,11 +335,10 @@ push rax"""
                 let! typeDecl = checkWithContext' (fun c -> { c.WithSource () with CurrentSource = typ.Source }) (locateTypeDecl typename)
                 let! fieldOffset, fieldSize, fieldType = getFieldOffsetSizeType typeDecl name
                 do! writeExpressionAddress left
-                do! bprintfn $"""
-mov rax, 0
-pop rax
-add rax, %d{fieldOffset}
-push rax"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn $"add rax, %d{fieldOffset}"
+                do! bprintfn "push rax"
                 do! writeCopyToStack fieldType
             | typ -> yield! sourceFuncContext (fatalDiag' $"Member access to '%O{typ}'.%s{name} is not supported.")
 
@@ -366,14 +351,13 @@ push rax"""
 
             do! writeExpressionAddress left
             do! writeExpression indexExpr
-            do! bprintfn $"""
-mov rax, 0
-mov rbx, 0
-pop rbx
-pop rax
-mul rbx, rbx, %+d{size}
-lea rax, [rax+rbx]
-push rax"""
+            do! bprintfn "mov rax, 0"
+            do! bprintfn "mov rbx, 0"
+            do! bprintfn "pop rbx"
+            do! bprintfn "pop rax"
+            do! bprintfn $"mul rbx, rbx, %+d{size}"
+            do! bprintfn "lea rax, [rax+rbx]"
+            do! bprintfn "push rax"
             do! writeCopyToStack { TypeId = arraySubitemType; Source = arrayType.Source }
 
         | Expression.StructCreation (name, fields) as expr ->
@@ -381,11 +365,10 @@ push rax"""
 
         | Expression.Bininversion expr ->
             do! writeExpression expr
-            do! bprintfn """
-mov rax, 0
-pop rax
-not rax
-push rax"""
+            do! bprintfn "mov rax, 0"
+            do! bprintfn "pop rax"
+            do! bprintfn "not rax"
+            do! bprintfn "push rax"
     }
 
     and writeBinaryExpression (expression: BinaryExpression) : TypeCheckerM.M<NasmContext, unit> = tchecker {
@@ -402,31 +385,28 @@ push rax"""
             if (TypeId.isPointerType leftType || TypeId.isPointerType rightType) &&
                (TypeId.isUnsigned leftType || TypeId.isUnsigned rightType) then
 
-                do! bprintfn """
-mov rax, 0
-mov rbx, 0
-pop rax
-pop rbx
-add rax, rbx
-push rax"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "mov rbx, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "pop rbx"
+                do! bprintfn "add rax, rbx"
+                do! bprintfn "push rax"
 
             elif TypeId.isIntegerType leftType && TypeId.isIntegerType rightType then
-                do! bprintfn """
-mov rax, 0
-mov rbx, 0
-pop rax
-pop rbx
-add rax, rbx
-push rax"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "mov rbx, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "pop rbx"
+                do! bprintfn "add rax, rbx"
+                do! bprintfn "push rax"
 
             elif TypeId.isFloat leftType && TypeId.isFloat rightType then
-                do! bprintfn """
-fld qword [rsp]
-fld qword [rsp+8]
-add rsp, 16
-faddp
-sub rsp, 8
-fstp qword [rsp]"""
+                do! bprintfn "fld qword [rsp]"
+                do! bprintfn "fld qword [rsp+8]"
+                do! bprintfn "add rsp, 16"
+                do! bprintfn "faddp"
+                do! bprintfn "sub rsp, 8"
+                do! bprintfn "fstp qword [rsp]"
 
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' + '%O{rightType}' should have been covered.")
 
@@ -442,31 +422,28 @@ fstp qword [rsp]"""
             if (TypeId.isPointerType leftType || TypeId.isPointerType rightType) &&
                (TypeId.isUnsigned leftType || TypeId.isUnsigned rightType) then
 
-                do! bprintfn """
-mov rax, 0
-mov rbx, 0
-pop rax
-pop rbx
-rub rax, rbx
-push rax"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "mov rbx, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "pop rbx"
+                do! bprintfn "sub rax, rbx"
+                do! bprintfn "push rax"
 
             elif TypeId.isIntegerType leftType && TypeId.isIntegerType rightType then
-                do! bprintfn """
-mov rax, 0
-mov rbx, 0
-pop rax
-pop rbx
-sub rax, rbx
-push rax"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "mov rbx, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "pop rbx"
+                do! bprintfn "sub rax, rbx"
+                do! bprintfn "push rax"
 
             elif TypeId.isFloat leftType && TypeId.isFloat rightType then
-                do! bprintfn """
-fld qword [rsp]
-fld qword [rsp+8]
-add rsp, 16
-fsubp
-sub rsp, 8
-fstp qword [rsp]"""
+                do! bprintfn "fld qword [rsp]"
+                do! bprintfn "fld qword [rsp+8]"
+                do! bprintfn "add rsp, 16"
+                do! bprintfn "fsubp"
+                do! bprintfn "sub rsp, 8"
+                do! bprintfn "fstp qword [rsp]"
 
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' - '%O{rightType}' should have been covered.")
 
@@ -480,30 +457,28 @@ fstp qword [rsp]"""
             do! writeExpression left
 
             if TypeId.isSigned leftType && TypeId.isSigned rightType then
-                do! bprintfn """
-mov rax, 0
-mov rbx, 0
-pop rax
-pop rbx
-imul rax, rbx
-push rax"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "mov rbx, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "pop rbx"
+                do! bprintfn "imul rax, rbx"
+                do! bprintfn "push rax"
+
             elif TypeId.isUnsigned leftType && TypeId.isUnsigned rightType then
-                do! bprintfn """
-mov rax, 0
-mov rbx, 0
-pop rax
-pop rbx
-mul rax, rbx
-push rax"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "mov rbx, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "pop rbx"
+                do! bprintfn "mul rax, rbx"
+                do! bprintfn "push rax"
 
             elif TypeId.isFloat leftType && TypeId.isFloat rightType then
-                do! bprintfn """
-fld qword [rsp]
-fld qword [rsp+8]
-add rsp, 16
-fmulp
-sub rsp, 8
-fstp qword [rsp]"""
+                do! bprintfn "fld qword [rsp]"
+                do! bprintfn "fld qword [rsp+8]"
+                do! bprintfn "add rsp, 16"
+                do! bprintfn "fmulp"
+                do! bprintfn "sub rsp, 8"
+                do! bprintfn "fstp qword [rsp]"
 
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType} * '%O{rightType}' should have been covered.")
 
@@ -517,29 +492,29 @@ fstp qword [rsp]"""
             do! writeExpression left
 
             if TypeId.isSigned leftType && TypeId.isSigned rightType then
-                do! bprintfn """
-mov rax, 0
-mov rbx, 0
-pop rax
-pop rbx
-idiv rax, rbx
-push rax"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "mov rbx, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "pop rbx"
+                do! bprintfn "idiv rax, rbx"
+                do! bprintfn "push rax"
+
             elif TypeId.isUnsigned leftType && TypeId.isUnsigned rightType then
-                do! bprintfn """
-mov rax, 0
-mov rbx, 0
-pop rax
-pop rbx
-div rax, rbx
-push rax"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "mov rbx, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "pop rbx"
+                do! bprintfn "div rax, rbx"
+                do! bprintfn "push rax"
+
             elif TypeId.isFloat leftType && TypeId.isFloat rightType then
-                do! bprintfn """
-fld qword [rsp]
-fld qword [rsp+8]
-add rsp, 16
-fdivp
-sub rsp, 8
-fstp qword [rsp]"""
+                do! bprintfn "fld qword [rsp]"
+                do! bprintfn "fld qword [rsp+8]"
+                do! bprintfn "add rsp, 16"
+                do! bprintfn "fdivp"
+                do! bprintfn "sub rsp, 8"
+                do! bprintfn "fstp qword [rsp]"
+
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' / '%O{rightType}' should have been covered.")
 
         | BinaryExpression.Equal (left, right) ->
@@ -560,18 +535,17 @@ fstp qword [rsp]"""
                (TypeId.isFloat leftType && TypeId.isFloat rightType)  ||
                (TypeId.unwrapConst leftType = TypeId.Bool && TypeId.unwrapConst rightType = TypeId.Bool) then
 
-                do! bprintfn $"""
-mov rax, 0
-mov rbx, 0
-pop rax
-pop rbx
-cmp rax, rbx
-je %s{label1}
-push 00h
-jmp %s{label2}
-%s{label1}:
-push ffffffffffffffffh
-%s{label2}:"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "mov rbx, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "pop rbx"
+                do! bprintfn "cmp rax, rbx"
+                do! bprintfn $"je %s{label1}"
+                do! bprintfn $"push %s{nasmFalseConst}"
+                do! bprintfn $"jmp %s{label2}"
+                do! bprintfn $"%s{label1}:"
+                do! bprintfn $"push %s{nasmTrueConst}"
+                do! bprintfn $"%s{label2}:"
 
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' == '%O{rightType}' should have been covered.")
 
@@ -592,18 +566,18 @@ push ffffffffffffffffh
                (TypeId.isIntegerType leftType && TypeId.isIntegerType rightType) ||
                (TypeId.unwrapConst leftType = TypeId.Bool && TypeId.unwrapConst rightType = TypeId.Bool) then
 
-                do! bprintfn $"""
-mov rax, 0
-mov rbx, 0
-pop rax
-pop rbx
-cmp rax, rbx
-jne %s{label1}
-push 00h
-jmp %s{label2}
-%s{label1}:
-push ffffffffffffffffh
-%s{label2}:"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "mov rbx, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "pop rbx"
+                do! bprintfn "cmp rax, rbx"
+                do! bprintfn $"jne %s{label1}"
+                do! bprintfn $"push %s{nasmFalseConst}"
+                do! bprintfn $"jmp %s{label2}"
+                do! bprintfn $"%s{label1}:"
+                do! bprintfn $"push %s{nasmTrueConst}"
+                do! bprintfn $"%s{label2}:"
+
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' != '%O{rightType}' should have been covered.")
 
         | BinaryExpression.Less (left, right) ->
@@ -622,34 +596,32 @@ push ffffffffffffffffh
                (TypeId.isUnsigned leftType || TypeId.isUnsigned rightType)) ||
                (TypeId.isIntegerType leftType && TypeId.isIntegerType rightType) then
 
-                do! bprintfn $"""
-mov rax, 0
-mov rbx, 0
-pop rax
-pop rbx
-cmp rax, rbx
-jb %s{label1}
-push 00h
-jmp %s{label2}
-%s{label1}:
-push ffffffffffffffffh
-%s{label2}:"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "mov rbx, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "pop rbx"
+                do! bprintfn "cmp rax, rbx"
+                do! bprintfn $"jb %s{label1}"
+                do! bprintfn $"push %s{nasmFalseConst}"
+                do! bprintfn $"jmp %s{label2}"
+                do! bprintfn $"%s{label1}:"
+                do! bprintfn $"push %s{nasmTrueConst}"
+                do! bprintfn $"%s{label2}:"
 
             elif TypeId.isFloat leftType && TypeId.isFloat rightType then
-                do! bprintfn $"""
-fld qword [rsp]
-fld qword [rsp+8]
-add rsp, 16
-fcompp
-mov rax, 0
-fsctw al
-cmp rax, 001b
-je %s{label1}
-push 00h
-jmp %s{label2}
-%s{label1}:
-push ffffffffffffffffh
-%s{label2}:"""
+                do! bprintfn "fld qword [rsp]"
+                do! bprintfn "fld qword [rsp+8]"
+                do! bprintfn "add rsp, 16"
+                do! bprintfn "fcompp"
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "fsctw al"
+                do! bprintfn "cmp rax, 001b"
+                do! bprintfn $"je %s{label1}"
+                do! bprintfn $"push %s{nasmFalseConst}"
+                do! bprintfn $"jmp %s{label2}"
+                do! bprintfn $"%s{label1}:"
+                do! bprintfn $"push %s{nasmTrueConst}"
+                do! bprintfn $"%s{label2}:"
 
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' < '%O{rightType}' should have been covered.")
 
@@ -668,35 +640,35 @@ push ffffffffffffffffh
                 (TypeId.isUnsigned leftType || TypeId.isUnsigned rightType)) ||
                (TypeId.isIntegerType leftType && TypeId.isIntegerType rightType) then
 
-                do! bprintfn $"""
-mov rax, 0
-mov rbx, 0
-pop rax
-pop rbx
-cmp rax, rbx
-jbe %s{label1}
-push 00h
-jmp %s{label2}
-%s{label1}:
-push ffffffffffffffffh
-%s{label2}:"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "mov rbx, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "pop rbx"
+                do! bprintfn "cmp rax, rbx"
+                do! bprintfn $"jbe %s{label1}"
+                do! bprintfn $"push %s{nasmFalseConst}"
+                do! bprintfn $"jmp %s{label2}"
+                do! bprintfn $"%s{label1}:"
+                do! bprintfn $"push %s{nasmTrueConst}"
+                do! bprintfn $"%s{label2}:"
+
             elif TypeId.isFloat leftType && TypeId.isFloat rightType then
-                do! bprintfn $"""
-fld qword [rsp]
-fld qword [rsp+8]
-add rsp, 16
-fcompp
-mov rax, 0
-fsctw al
-cmp rax, 001b
-je %s{label1}
-cmp rax, 100b
-je %s{label1}
-push 00h
-jmp %s{label2}
-%s{label1}:
-push ffffffffffffffffh
-%s{label2}:"""
+                do! bprintfn "fld qword [rsp]"
+                do! bprintfn "fld qword [rsp+8]"
+                do! bprintfn "add rsp, 16"
+                do! bprintfn "fcompp"
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "fsctw al"
+                do! bprintfn "cmp rax, 001b"
+                do! bprintfn $"je %s{label1}"
+                do! bprintfn "cmp rax, 100b"
+                do! bprintfn $"je %s{label1}"
+                do! bprintfn $"push %s{nasmFalseConst}"
+                do! bprintfn $"jmp %s{label2}"
+                do! bprintfn $"%s{label1}:"
+                do! bprintfn $"push %s{nasmTrueConst}"
+                do! bprintfn $"%s{label2}:"
+
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' <= '%O{rightType}' should have been covered.")
 
         | BinaryExpression.Greater (left, right) ->
@@ -714,30 +686,30 @@ push ffffffffffffffffh
                 (TypeId.isUnsigned leftType || TypeId.isUnsigned rightType) ||
                 (TypeId.isIntegerType leftType || TypeId.isIntegerType rightType)) then
 
-                do! bprintfn $"""
-mov rax, 0
-mov rbx, 0
-cmp rax, rbx
-ja %s{label1}
-push 00h
-jmp %s{label2}
-%s{label1}:
-push ffffffffffffffffh
-%s{label2}:"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "mov rbx, 0"
+                do! bprintfn "cmp rax, rbx"
+                do! bprintfn $"ja %s{label1}"
+                do! bprintfn $"push %s{nasmFalseConst}"
+                do! bprintfn $"jmp %s{label2}"
+                do! bprintfn $"%s{label1}:"
+                do! bprintfn $"push %s{nasmTrueConst}"
+                do! bprintfn $"%s{label2}:"
+
             elif TypeId.isFloat leftType && TypeId.isFloat rightType then
-                do! bprintfn $"""
-fld qword [rsp]
-fld qword [rsp+8]
-add rsp, 16
-fcompp
-mov rax, 0
-fsctw al
-cmp rax, 000b
-je %s{label1}
-push 00h
-%s{label1}:
-push ffffffffffffffffh
-%s{label2}: """
+                do! bprintfn "fld qword [rsp]"
+                do! bprintfn "fld qword [rsp+8]"
+                do! bprintfn "add rsp, 16"
+                do! bprintfn "fcompp"
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "fsctw al"
+                do! bprintfn "cmp rax, 000b"
+                do! bprintfn $"je %s{label1}"
+                do! bprintfn $"push %s{nasmFalseConst}"
+                do! bprintfn $"%s{label1}:"
+                do! bprintfn $"push %s{nasmTrueConst}"
+                do! bprintfn $"%s{label2}: "
+
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' < '%O{rightType}' should have been covered.")
 
         | BinaryExpression.GreaterOrEqual (left, right) ->
@@ -755,36 +727,36 @@ push ffffffffffffffffh
                 (TypeId.isUnsigned leftType || TypeId.isUnsigned rightType) ||
                 (TypeId.isIntegerType leftType || TypeId.isIntegerType rightType)) then
 
-                do! bprintfn $"""
-mov rax, 0
-mov rbx, 0
-pop rax
-pop rbx
-cmp rax, rbx
-jae %s{label1}
-push 00h
-jmp %s{label2}
-%s{label1}:
-push ffffffffffffffffh
-%s{label2}:"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "mov rbx, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "pop rbx"
+                do! bprintfn "cmp rax, rbx"
+                do! bprintfn $"jae %s{label1}"
+                do! bprintfn $"push %s{nasmFalseConst}"
+                do! bprintfn $"jmp %s{label2}"
+                do! bprintfn $"%s{label1}:"
+                do! bprintfn $"push %s{nasmTrueConst}"
+                do! bprintfn $"%s{label2}:"
+
             elif TypeId.isFloat leftType && TypeId.isFloat rightType then
 
-                do! bprintfn $"""
-fld qword [rsp]
-fld qword [rsp+8]
-add rsp, 16
-fcompp
-mov rax, 0
-fsctw al
-cmp rax, 000b
-jmp %s{label1}
-cmp rax, 100b
-jmp %s{label1}
-push 00h
-jmp %s{label2}
-%s{label1}:
-push ffffffffffffffffh
-%s{label2}:"""
+                do! bprintfn "fld qword [rsp]"
+                do! bprintfn "fld qword [rsp+8]"
+                do! bprintfn "add rsp, 16"
+                do! bprintfn "fcompp"
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "fsctw al"
+                do! bprintfn "cmp rax, 000b"
+                do! bprintfn $"jmp %s{label1}"
+                do! bprintfn "cmp rax, 100b"
+                do! bprintfn $"jmp %s{label1}"
+                do! bprintfn $"push %s{nasmFalseConst}"
+                do! bprintfn $"jmp %s{label2}"
+                do! bprintfn $"%s{label1}:"
+                do! bprintfn $"push %s{nasmTrueConst}"
+                do! bprintfn $"%s{label2}:"
+
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' >= '%O{rightType}' should have been covered.")
 
         | BinaryExpression.Or (left, right) ->
@@ -799,34 +771,33 @@ push ffffffffffffffffh
             if TypeId.isIntegerType leftType && TypeId.isIntegerType rightType then
                 do! writeExpression right
                 do! writeExpression left
-                do! bprintfn """
-mov rax, 0
-mov rbx, 0
-pop rax
-pop rbx
-or rax, rbx
-push rax"""
-            elif TypeId.unwrapConst leftType = TypeId.Bool && TypeId.unwrapConst rightType = TypeId.Bool then
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "mov rbx, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "pop rbx"
+                do! bprintfn "or rax, rbx"
+                do! bprintfn "push rax"
+
+            elif TypeId.isBool leftType && TypeId.isBool rightType then
                 do! writeExpression left
-                do! bprintfn $"""
-mov rax, 0
-pop rax
-cmp rax, 0
-je %s{rightBranch}
-push ffffffffffffffffh
-jmp %s{endOfOrBranch}
-%s{rightBranch}:"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "cmp rax, 0"
+                do! bprintfn $"je %s{rightBranch}"
+                do! bprintfn $"push %s{nasmTrueConst}"
+                do! bprintfn $"jmp %s{endOfOrBranch}"
+                do! bprintfn $"%s{rightBranch}:"
                 do! writeExpression right
-                do! bprintfn $"""
-mov rax, 0
-pop rax
-cmp rax, 0
-je %s{falseBranch}
-push ffffffffffffffffh
-jmp %s{endOfOrBranch}
-%s{falseBranch}:
-push 00h
-%s{endOfOrBranch}:"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "cmp rax, 0"
+                do! bprintfn $"je %s{falseBranch}"
+                do! bprintfn $"push %s{nasmTrueConst}"
+                do! bprintfn $"jmp %s{endOfOrBranch}"
+                do! bprintfn $"%s{falseBranch}:"
+                do! bprintfn $"push %s{nasmFalseConst}"
+                do! bprintfn $"%s{endOfOrBranch}:"
+
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' or '%O{rightType}' should have been covered.")
 
         | BinaryExpression.And (left, right) ->
@@ -840,31 +811,30 @@ push 00h
             if TypeId.isIntegerType leftType && TypeId.isIntegerType rightType then
                 do! writeExpression right
                 do! writeExpression left
-                do! bprintfn """
-mov rax, 0
-mov rbx, 0
-pop rax
-pop rbx
-and rax, rbx
-push rax"""
-            elif TypeId.unwrapConst leftType = TypeId.Bool && TypeId.unwrapConst rightType = TypeId.Bool then
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "mov rbx, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "pop rbx"
+                do! bprintfn "and rax, rbx"
+                do! bprintfn "push rax"
+
+            elif TypeId.isBool leftType && TypeId.isBool rightType then
                 do! writeExpression left
-                do! bprintfn $"""
-mov rax, 0
-pop rax
-cmp rax, 0
-je %s{falseBranch}"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "cmp rax, 0"
+                do! bprintfn $"je %s{falseBranch}"
                 do! writeExpression right
-                do! bprintfn $"""
-mov rax, 0
-pop rax
-cmp rax, 0
-je %s{falseBranch}
-push ffffffffffffffffh
-jmp %s{endOfAndBranch}
-%s{falseBranch}:
-push 00h
-%s{endOfAndBranch}:"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "cmp rax, 0"
+                do! bprintfn $"je %s{falseBranch}"
+                do! bprintfn $"push %s{nasmTrueConst}"
+                do! bprintfn $"jmp %s{endOfAndBranch}"
+                do! bprintfn $"%s{falseBranch}:"
+                do! bprintfn $"push %s{nasmFalseConst}"
+                do! bprintfn $"%s{endOfAndBranch}:"
+
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' and '%O{rightType}' should have been covered")
 
         | BinaryExpression.Xor (left, right) ->
@@ -876,13 +846,13 @@ push 00h
             if TypeId.isIntegerType leftType && TypeId.isIntegerType rightType then
                 do! writeExpression right
                 do! writeExpression left
-                do! bprintfn """
-mov rax, 0
-mov rbx, 0
-pop rax
-pop rbx
-xor rax, rbx
-push rax"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "mov rbx, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "pop rbx"
+                do! bprintfn "xor rax, rbx"
+                do! bprintfn "push rax"
+
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' xor '%O{rightType}' should have been covered.")
 
         | BinaryExpression.RShift (left, right) ->
@@ -894,13 +864,13 @@ push rax"""
             if TypeId.isIntegerType leftType && TypeId.isIntegerType rightType then
                 do! writeExpression right
                 do! writeExpression left
-                do! bprintfn """
-mov rax, 0
-mov rbx, 0
-pop rax
-pop rbx
-shr rax, rbx
-push rax"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "mov rbx, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "pop rbx"
+                do! bprintfn "shr rax, rbx"
+                do! bprintfn "push rax"
+
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' >> '%O{rightType}' should have been covered.")
 
         | BinaryExpression.LShift (left, right) ->
@@ -912,13 +882,14 @@ push rax"""
             if TypeId.isIntegerType leftType && TypeId.isIntegerType rightType then
                 do! writeExpression right
                 do! writeExpression left
-                do! bprintfn """
-mov rax, 0
-mov rbx, 0
-pop rax
-pop rbx
-shl rax, rbx
-push rax"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "mov rbx, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "pop rbx"
+                do! bprintfn "shl rax, rbx"
+                do! bprintfn "push rax"
+
+            else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' << '%O{rightType}' should have been covered.")
     }
 
     and writeExpressionAddress (expression: Expression) : TypeCheckerM.M<NasmContext, unit> = tchecker {
@@ -929,17 +900,15 @@ push rax"""
         | Expression.Variable name ->
             match Map.tryFind name stackEnv with
             | Some stackOffset ->
-                do! bprintfn $"""
-mov rax, 0
-lea rax, byte [rbp%+d{stackOffset}]
-push rax"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn $"lea rax, byte [rbp%+d{stackOffset}]"
+                do! bprintfn "push rax"
             | None ->
                 let! varDecl = sourceContext (locateVariableDecl { Name = name; Alias = None })
                 let label = getLabel varDecl.Variable.Name varDecl.Source varDecl.Variable.Modifier
-                do! bprintfn $"""
-mov rax, 0
-lea rax, byte [%s{label}]
-push rax"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn $"lea rax, byte [%s{label}]"
+                do! bprintfn "push rax"
 
         | Expression.MemberAccess (Expression.Variable varname, memberName)
             when isStructVariableWithMember varname memberName ssourceContext ->
@@ -949,21 +918,19 @@ push rax"""
                 let! typeDecl = checkWithContext' (fun c -> { c.WithSource () with CurrentSource = varDecl.Source }) (locateTypeDecl typename)
                 let label = getLabel varDecl.Variable.Name varDecl.Source varDecl.Variable.Modifier
                 let! fieldOffset, fieldSize, _ = getFieldOffsetSizeType typeDecl memberName
-                do! bprintfn $"""
-mov rax, 0
-lea rax, byte [%s{label}]
-add rax, %d{fieldOffset}
-push rax"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn $"lea rax, byte [%s{label}]"
+                do! bprintfn $"add rax, %d{fieldOffset}"
+                do! bprintfn "push rax"
             | typ -> failwithf $"Should not happen. Type '%O{typ}' should have been covered by isStructVariableWithMember function."
 
         | Expression.MemberAccess (Expression.Variable alias, name)
             when getAliasedSource alias ssourceContext |> Result.isOk ->
             let! varDecl = sourceContext (locateVariableDecl { Name = name; Alias = Some alias })
             let label = getLabel varDecl.Variable.Name varDecl.Source varDecl.Variable.Modifier
-            do! bprintfn $"""
-mov rax, 0
-lea rax, byte [%s{label}]
-push rax"""
+            do! bprintfn "mov rax, 0"
+            do! bprintfn $"lea rax, byte [%s{label}]"
+            do! bprintfn "push rax"
 
         | Expression.MemberAccess (left, memberName) ->
             let! typ = sourceContext (getExpressionType left)
@@ -972,11 +939,10 @@ push rax"""
                 let! typeDecl = checkWithContext' (fun c -> { c.WithSource () with CurrentSource = typ.Source }) (locateTypeDecl typename)
                 let! fieldOffset, fieldSize, fieldType = getFieldOffsetSizeType typeDecl memberName
                 do! writeExpressionAddress left
-                do! bprintfn $"""
-mov rax, 0
-pop rax
-add rax, %d{fieldOffset}
-push rax"""
+                do! bprintfn "mov rax, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn $"add rax, %d{fieldOffset}"
+                do! bprintfn "push rax"
             | typ -> yield! sourceFuncContext (fatalDiag' $"Member access '%O{typ}'.%s{memberName} is not supported.")
 
         | Expression.ArrayAccess (array, index) ->
@@ -986,21 +952,20 @@ push rax"""
 
             do! writeExpressionAddress array
             do! writeExpression index
-            do! bprintfn $"""
-mov rax, 0
-mov rbx, 0
-pop rbx
-pop rax
-mul rbx, rbx, %d{size}
-lea rax, byte [rax+rbx]
-push rax"""
+            do! bprintfn "mov rax, 0"
+            do! bprintfn "mov rbx, 0"
+            do! bprintfn "pop rbx"
+            do! bprintfn "pop rax"
+            do! bprintfn $"mul rbx, rbx, %d{size}"
+            do! bprintfn "lea rax, byte [rax+rbx]"
+            do! bprintfn "push rax"
 
         | expression ->
             let! typ = sourceContext (getExpressionType expression)
             match TypeId.unwrapConst typ.TypeId with
             | TypeId.Pointer _ ->
                 do! writeExpression expression
-            | typ ->
+            | _ ->
                 let unionCaseInfo, _ = FSharpValue.GetUnionFields (expression, expression.GetType ())
                 yield! sourceFuncContext (fatalDiag' $"Can't get address of expression '%s{unionCaseInfo.Name}'.")
     }
@@ -1042,11 +1007,10 @@ push rax"""
             let endOfIfBranch = allocator.AllocateLabel "end_of_if"
             let writeIfCond (ifCond: IfCond) elseBranch : TypeCheckerM.M<NasmContext, unit> = tchecker {
                 do! writeExpression ifCond.Condition
-                do! bprintf $"""
-mov rax, 0
-pop rax
-cmp rax, 0
-je %s{elseBranch}"""
+                do! bprintf $"mov rax, 0"
+                do! bprintfn "pop rax"
+                do! bprintfn "cmp rax, 0"
+                do! bprintfn $"je %s{elseBranch}"
                 do! writeStatements ifCond.Body endOfFunctionLabel
                 do! bprintfn $"jmp %s{endOfIfBranch}"
             }
@@ -1086,20 +1050,18 @@ je %s{elseBranch}"""
             do! bprintfn $"%s{compareIndexVarLabel}:"
             do! checkWithContext newContext (writeExpression endExpression)
             do! checkWithContext newContext (writeExpression (Expression.Variable indexVariable))
-            do! bprintfn $"""
-mov rax, 0
-mov rbx, 0
-pop rax
-pop rbx
-cmp rax, rbx
-je %s{endOfForLoopLabel}"""
+            do! bprintfn "mov rax, 0"
+            do! bprintfn "mov rbx, 0"
+            do! bprintfn "pop rax"
+            do! bprintfn "pop rbx"
+            do! bprintfn "cmp rax, rbx"
+            do! bprintfn $"je %s{endOfForLoopLabel}"
             do! checkWithContext newContext (writeStatements body endOfFunctionLabel)
             do! checkWithContext newContext (writeExpression stepExpression)
             do! checkWithContext newContext (writeExpressionAddress (Expression.Variable indexVariable))
             do! checkWithContext newContext (writeCopyFromStack { TypeId = TypeId.Int64; Source = source })
-            do! bprintfn $"""
-jmp %s{compareIndexVarLabel}
-%s{endOfForLoopLabel}:"""
+            do! bprintfn $"jmp %s{compareIndexVarLabel}"
+            do! bprintfn $"%s{endOfForLoopLabel}:"
 
             yield! context
 
@@ -1110,15 +1072,13 @@ jmp %s{compareIndexVarLabel}
 
             do! bprintfn $"%s{startOfWhileLoop}:"
             do! writeExpression condition
-            do! bprintfn $"""
-mov rax, 0
-pop rax
-cmp rax, 0
-je ${endOfWhileLoop}"""
+            do! bprintfn "mov rax, 0"
+            do! bprintfn "pop rax"
+            do! bprintfn "cmp rax, 0"
+            do! bprintfn $"je %s{endOfWhileLoop}"
             do! writeStatements body endOfFunctionLabel
-            do! bprintfn $"""
-jmp %s{startOfWhileLoop}
-%s{endOfWhileLoop}:"""
+            do! bprintfn $"jmp %s{startOfWhileLoop}"
+            do! bprintfn $"%s{endOfWhileLoop}:"
 
             yield! context
 
@@ -1136,8 +1096,13 @@ jmp %s{startOfWhileLoop}
 
         | Statement.Expression (Expression.FuncCall (name, args) as expression) ->
             let! func = sourceContext (locateFunctionDecl name)
-            let! expressionSize = sourceContext (getExpressionSize expression)
-            do! bprintfn $"add rbp, %d{expressionSize}"
+            let! size = sourceContext (getExpressionSize expression)
+
+            do! writeExpression expression
+            match TypeId.isVoid func.Function.ReturnType with
+            | true -> ()
+            | false ->
+                do! bprintfn $"add rsp, %d{align size 8}"
 
             yield! context
 
@@ -1166,16 +1131,22 @@ jmp %s{startOfWhileLoop}
 
     let writeNativeFunction (func: Function) : TypeCheckerM.M<SourceContext, unit> = tchecker {
         let! context = context
-        let argsTypes = func.Args |> List.map snd
-        let! argsSizes = argsTypes |> List.map (fun t -> getTypeIdSize { TypeId = t; Source = context.CurrentSource }) |> unwrapList
-        let argsNames = func.Args |> List.map fst
+        let! argsSizes =
+            func.Args |>
+            List.map snd |>
+            List.map (fun t -> getTypeIdSize { TypeId = t; Source = context.CurrentSource })
+            |> unwrapList
+        let! funcReturnSize = getTypeIdSize { TypeId = func.ReturnType; Source = context.CurrentSource }
+        let returnSizeFitsReg = 1 <= funcReturnSize && funcReturnSize <= 8
+        let firstArgIsResultPtr = not (TypeId.isVoid func.ReturnType) && not returnSizeFitsReg
+        let initialArgOffset = if firstArgIsResultPtr then 24 else 16 // 24 is (old rbp(8) + ret addr(8) + pointer(8)), 16 is (old rbp(8) + ret addr(8))
 
         let stackEnv, _ =
-            List.zip argsNames argsSizes
+            List.zip (List.map fst func.Args) argsSizes
             |> List.fold (fun (env, offset) (name, size) ->
                 let env = Map.add name offset env
-                let offset = offset + size
-                (env, offset)) (Map.empty, 8)
+                let offset = offset + (align size 8)
+                (env, offset)) (Map.empty, initialArgOffset)
 
         let nameTypeEnv = lazy (
                 func.Args
@@ -1197,100 +1168,239 @@ jmp %s{startOfWhileLoop}
 
         do! checkWithContext nasmContext (writeStatements func.Body endOfFunctionLabel)
 
-        if stackAllocator.TotalBytesAllocated > 65536 then
-            yield! fatalDiag "Stack size exceeded 65536 bytes. 'enter' instruction can't take more bytes."
 
         fprintf $";;; %s{func.Name} ("
         let argsStr = func.Args |> List.map (fun (name, typ) -> sprintf $"%s{name} : %O{typ}") |> String.concat ", "
         fprintfn $"%s{argsStr}) : %O{func.ReturnType}"
 
         let funcLabel = getLabel' func.Name context.CurrentSource
-        fprintfn $"""
-%%push
-static %s{funcLabel}
-%s{funcLabel}:
-enter %d{align stackAllocator.TotalBytesAllocated 8}, 0
-;;; Body
-%O{funcBodyStr}
-;;; End of body
-%s{endOfFunctionLabel}:"""
+        fprintfn "%%push"
+        fprintfn $"static %s{funcLabel}"
+        fprintfn $"%s{funcLabel}:"
+        fprintfn $"enter %d{align stackAllocator.TotalBytesAllocated 8}, 0"
+        fprintfn ";;; Body"
+        fprintfn $"%O{funcBodyStr}"
+        fprintfn ";;; End of body"
+        fprintfn $" %s{endOfFunctionLabel}:"
 
-        match TypeId.unwrapConst func.ReturnType with
-        | TypeId.Void ->
-            fprintfn $"""
-leave
-mov rax, 0
-pop rax
-add rsp, 8
-add rsp, %d{List.sum argsSizes}
-push rax
-ret"""
-        | typ ->
-            let! size = getTypeIdSize { TypeId = typ; Source = context.CurrentSource }
-            let again = stackAllocator.AllocateLabel "result_copying_again"
-            let endLabel = stackAllocator.AllocateLabel "result_copying_end"
-
-            match size with
-            | 0 -> failwithf "Zero should not happen."
-            | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 ->
-                fprintfn """
-mov rax, 0
-mov rbx, 0
-pop rax
-leave
-mov rbx, qword [rsp]
-push rax
-push rbx
-ret"""
-            | size ->
-            fprintfn $"""
-mov rax, 0
-mov rbx, 0
-lea rax, qword [rsp]
-leave
-mov rbx, qword [rsp]
-add rsp, 8
-add rsp, %d{List.sum argsSizes}
-mov rcx, 0
-%s{again}:
-cmp rcx, %d{size}
-je %s{endLabel}
-mov rdx, 0
-mov dl, byte [rax+rcx]
-mov byte [rsp+rcx], dl
-add rcx, 1
-jmp %s{again}
-%s{endLabel}:
-sub rsp, %d{size}
-push rbx
-ret"""
+        let argsSizesAligned = argsSizes |> List.sumBy (fun s -> align s 8)
+        match TypeId.isVoid func.ReturnType with
+        | true ->
+            fprintfn "leave"
+            fprintfn "pop rax ; Return address"
+            fprintfn $"add rsp, %d{argsSizesAligned} ; Remove incoming arguments"
+            fprintfn "push rax"
+            fprintfn "ret"
+        | false when returnSizeFitsReg ->
+            fprintfn "mov rax, 0"
+            fprintfn "mov rbx, 0"
+            fprintfn "pop rax ; Move result expression from stack to reg"
+            fprintfn "leave"
+            fprintfn "pop rbx ; Return address"
+            fprintfn $"add rsp, %d{argsSizesAligned} ; Remove incoming arguments"
+            fprintfn "push rbx"
+            fprintfn "ret"
+        | false ->
+            fprintfn ";;; Copy result expression from stack to pointer from implicit first argument"
+            fprintfn $"push %d{funcReturnSize}"
+            fprintfn "mov rax, qword [rbp+16]"
+            fprintfn "push rax"
+            fprintfn "push rsp"
+            fprintfn "memcopy"
+            fprintfn $"add rsp, %d{align funcReturnSize 8}"
+            fprintfn "leave"
+            fprintfn "pop rax; Return address"
+            fprintfn $"add rsp, %d{argsSizesAligned} ; Remove incoming arguments"
+            fprintfn "add rsp, 8; Remove first implicit pointer argument"
+            fprintfn "push rax"
+            fprintfn "ret"
 
         fprintfn "%%pop"
+    }
+
+    let writeExportWrapperMicrosoftX64 (func: Function) : TypeCheckerM.M<SourceContext, unit> = tchecker {
+        let! source = getFromContext (fun c -> c.CurrentSource)
+        let! argsSizes = func.Args |> List.map snd |> List.map (fun t -> getTypeIdSize { TypeId = t; Source = source }) |> unwrapList
+
+        let copyRegArg reg offset argSize = (fun () ->
+            match argSize with
+            | 0 -> failwith "Can't copy argument of size 0."
+            | 1 ->
+                fprintfn $"mov rax, %s{reg}"
+                fprintfn "and rax, 0ffh"
+                fprintfn $"mov qword [rsp%+d{offset}], rax"
+            | 2 ->
+                fprintfn $"mov rax, %s{reg}"
+                fprintfn "and rax, 0ffffh"
+                fprintfn $"mov qword [rsp%+d{offset}], rax"
+            | 4 ->
+                fprintfn $"mov rax, %s{reg}"
+                fprintfn "and rax, 0ffffffffh"
+                fprintfn $"mov qword [rsp%+d{offset}], rax"
+            | 8 ->
+                fprintfn $"mov qword [rsp%+d{offset}, %s{reg}"
+            | size ->
+                fprintfn $"push %d{size}"
+                fprintfn $"lea rax, qword [rsp%+d{offset}]"
+                fprintfn "push rax"
+                fprintfn $"push %s{reg}"
+                fprintfn "memcopy")
+
+        let copyFloatArg reg offset = (fun () ->
+            fprintfn $"movsd qword [rsp%+d{offset}], %s{reg}")
+
+        let copyStackArg index offset argSize = (fun () ->
+            match argSize with
+            | 0 -> failwith "Can't copy argument of size 0"
+            | 1 ->
+                fprintfn "mov rax, 0"
+                fprintfn $"mov rax, byte [rbp+%d{index * 8}]"
+                fprintfn $"mov qword [rsp%+d{offset}]"
+            | 2 ->
+                fprintfn "mov rax, 0"
+                fprintfn $"mov rax, word [rbp+%d{index * 8}]"
+                fprintfn $"mov qword [rsp%+d{offset}], rax"
+            | 4 ->
+                fprintfn "mov rax, 0"
+                fprintfn $"mov rax, dword [rbp+%d{index * 8}]"
+                fprintfn $"mov qword [rsp%+d{offset}], rax"
+            | 8 ->
+                fprintfn "mov rax"
+                fprintfn $"mov rax, qword [rbp+%d{index * 8}]"
+                fprintfn $"mov qword [rsp%+d{offset}], rax"
+            | size ->
+                fprintfn $"push %d{size}"
+                fprintfn $"lea rax, qword [rsp%+d{offset}]"
+                fprintfn "push rax"
+                fprintfn $"mov rax, qword [rbp+%d{index * 8}]"
+                fprintfn "push rax"
+                fprintfn "memcopy")
+
+        let copyArgsFromMsX64ToStack (offset, writer: unit -> unit) (argIndex, argType, argSize) =
+            let newWriter =
+                match argIndex with
+                | 0 when TypeId.isFloat argType -> copyFloatArg "xmm0" offset
+                | 0 -> copyRegArg "rcx" offset argSize
+                | 1 when TypeId.isFloat argType -> copyFloatArg "xmm1" offset
+                | 1 -> copyRegArg "rdx" offset argSize
+                | 2 when TypeId.isFloat argType -> copyFloatArg "xmm2" offset
+                | 2 -> copyRegArg "r8" offset argSize
+                | 3 when TypeId.isFloat argType -> copyFloatArg "xmm3" offset
+                | 3 -> copyRegArg "r9" offset argSize
+                | index -> copyStackArg (index - 4) offset argSize
+            let offset = offset + (align argSize 8)
+            (offset, writer >> newWriter)
+
+        let! funcReturnSize = getTypeIdSize { TypeId = func.ReturnType; Source = source }
+        let returnSizeFitsReg = List.contains funcReturnSize [ 0; 1; 2; 4; 8 ]
+        let firstArgIsResultPtr = not returnSizeFitsReg
+
+        let arguments =
+            List.indexed (List.zip (func.Args |> List.map snd) argsSizes)
+            |> List.map (fun (index, (argType, argSize)) -> (index, argType, argSize))
+        let arguments = if firstArgIsResultPtr then
+                            arguments |> List.map (fun (index, argType, argSize) -> (index + 1, argType, argSize))
+                        else arguments
+
+        let memoryToAllocate, argsToStackCopy =
+            arguments |> List.fold copyArgsFromMsX64ToStack (0, (fun () -> ()))
+        let memoryToAllocate = if firstArgIsResultPtr then memoryToAllocate + 8 else memoryToAllocate
+        let memoryToAllocate = if not (1 <= funcReturnSize && funcReturnSize <= 8) then memoryToAllocate + (align funcReturnSize 8) else memoryToAllocate
+
+        fprintfn $";;; Export wrapper for '%s{func.Name}' function"
+        fprintfn "%%push"
+        fprintfn $"global %s{func.Name}"
+        fprintfn $"%s{func.Name}:"
+        fprintfn $"enter %d{align memoryToAllocate 8}, 0"
+
+        if firstArgIsResultPtr then
+            fprintfn "mov qword [rbp-8], rcx"
+
+        argsToStackCopy ()
+
+        if not (1 <= funcReturnSize && funcReturnSize <= 8) then
+            fprintfn $"lea rax, qword [rbp-%d{(align funcReturnSize 8) + 8}]"
+            fprintfn "push rax"
+
+        fprintfn $"call %s{getLabel' func.Name source}"
+
+        match TypeId.isVoid func.ReturnType with
+        | true ->
+            fprintfn "mov rax, 0"
+            fprintfn "leave"
+            fprintfn "ret"
+        | false when 1 <= funcReturnSize && funcReturnSize <= 8 ->
+            match funcReturnSize with
+            | 0 -> failwith "Return size can't be 0 here."
+            | _ when TypeId.isFloat func.ReturnType ->
+                fprintfn "push rax"
+                fprintfn "movsd qword [rsp], xmm0"
+                fprintfn "add rsp, 8"
+                fprintfn "leave"
+                fprintfn "ret"
+            | 1 | 2 | 4 | 8 ->
+                fprintfn "leave"
+                fprintfn "ret"
+            | _ ->
+                fprintfn "mov rbx, qword [rbp-8]"
+                fprintfn "mov qword [rbx], rax"
+                fprintfn "mov rax, 0"
+                fprintfn "leave"
+                fprintfn "ret"
+        | false ->
+            fprintfn $"push %d{funcReturnSize}"
+            fprintfn "mov rax, qword [rbp-8]"
+            fprintfn "push rax"
+            fprintfn $"lea rax, qword[rbp-%d{(align funcReturnSize 8) + 8}]"
+            fprintfn "push rax"
+            fprintfn "memcopy"
+            fprintfn "mov rax, 0"
+            fprintfn "leave"
+            fprintfn "ret"
+        fprintfn "%%pop"
+        fprintfn $";;; End of export wrapper for '%s{func.Name}' function"
     }
 
     let writeFunction (func: Function) : TypeCheckerM.M<SourceContext, unit> = tchecker {
         match func.Modifier with
         | None -> do! writeNativeFunction func
         | Some Modifier.Export ->
-            failwith "Exported functions to be implemented."
+            do! writeNativeFunction func
+            match callconv with
+            | CallingConvention.MicrosoftX64 -> do! writeExportWrapperMicrosoftX64 func
+            | CallingConvention.SysVX64 -> failwith "Calling convention 'System V ABI x64' to be implemented'"
         | Some Modifier.Extern ->
             failwith "Extern functions to be implemented."
     }
 
+    let writeMacros () =
+        fprintfn "%%macro memcopy 0"
+        fprintfn "    mov rsi, 0"
+        fprintfn "    mov rdi, 0"
+        fprintfn "    mov rcx, 0"
+        fprintfn "    pop rsi"
+        fprintfn "    pop rdi"
+        fprintfn "    pop rcx"
+        fprintfn "    rep movsb"
+        fprintfn "%%endmacro"
+
     let runm (m: TypeCheckerM.M<SourceContext, unit>) (ctx: SourceContext) =
         match m ctx with
         | Ok ((), []) -> ()
-        | Ok ((), xs) ->
-            failwithf $"There are some errors running type checker context:\n%s{diags2Str xs}"
         | Error [] -> ()
+        | Ok ((), xs)
         | Error xs ->
             failwithf $"There are some errors running type checker context:\n%s{diags2Str xs}"
 
     interface ICodegenerator with
 
         member _.Write() =
+            fprintfn "bits 64"
+            writeMacros ()
+
             for source in program.Sources do
-                fprintf $";;; Source '%s{source.Filename}'\n\n"
+                fprintfn $";;; Source '%s{source.Filename}'"
+                fprintfn "section .text align=16"
 
                 match makeContext source program with
                 | Ok context ->
@@ -1299,4 +1409,4 @@ ret"""
                 | Error diags ->
                     failwithf $"Error creating type checker context:\n%s{diags2Str diags}"
 
-                fprintf $";;; End of source '%s{source.Filename}'\n\n"
+                fprintfn $";;; End of source '%s{source.Filename}'"
