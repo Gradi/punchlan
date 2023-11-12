@@ -112,7 +112,7 @@ let getFieldOffsetSizeType (typ: TypeDeclRef) (name: string) : TypeCheckerM.M<Na
         let! offset, xs = prev ()
         let! size = checkWithContext' (fun c -> c.WithSource ()) (getTypeIdSize { TypeId = fieldType; Source = typ.Source })
         let size = align size 8
-        let xs = xs @ [ (name, (offset, size, { TypeRef.TypeId = fieldType; Source = typ.Source })) ]
+        let xs = xs @ [ (fieldName, (offset, size, { TypeRef.TypeId = fieldType; Source = typ.Source })) ]
         yield (offset + size, xs)
     })
 
@@ -129,7 +129,6 @@ let getFieldOffsetSizeType (typ: TypeDeclRef) (name: string) : TypeCheckerM.M<Na
 
 /// Copy from address (located at top of stack) to stack
 let writeCopyToStack (typ: TypeRef) : TypeCheckerM.M<NasmContext, unit> = tchecker {
-    do! bprintfn "mov rax, 0"
     do! bprintfn "pop rax"
     match TypeId.unwrapConst typ.TypeId with
     | TypeId.Uint8
@@ -168,9 +167,9 @@ let writeCopyToStack (typ: TypeRef) : TypeCheckerM.M<NasmContext, unit> = tcheck
         do! bprintfn "mov rax, qword [rax]"
         do! bprintfn "push rax"
     | TypeId.Const _  as typ -> yield! sourceFuncContext (fatalDiag' $"Const(%O{typ}) should have been removed at this point.")
-    | TypeId.Named typename  ->
+    | TypeId.Named _  ->
         let! size = sourceContext (getTypeIdSize typ)
-        do! bprintfn $"sub rsp %d{align size 8}"
+        do! bprintfn $"sub rsp, %d{align size 8}"
         do! bprintfn $"push %d{size}"
         do! bprintfn "push rsp"
         do! bprintfn "push rax"
@@ -179,25 +178,21 @@ let writeCopyToStack (typ: TypeRef) : TypeCheckerM.M<NasmContext, unit> = tcheck
 
 /// Copy from stack to address (which is located on top of stack)
 let writeCopyFromStack (typ: TypeRef) : TypeCheckerM.M<NasmContext, unit> = tchecker {
-    do! bprintfn "mov rax, 0"
     do! bprintfn "pop rax"
 
     match TypeId.unwrapConst typ.TypeId with
     | TypeId.Char
     | TypeId.Int8
     | TypeId.Uint8 ->
-        do! bprintfn "mov rbx, 0"
         do! bprintfn "pop rbx"
         do! bprintfn "mov byte [rax], bl"
     | TypeId.Int16
     | TypeId.Uint16 ->
-        do! bprintfn "mov rbx, 0"
         do! bprintfn "pop rbx"
         do! bprintfn "mov word [rax], bx"
     | TypeId.Int32
     | TypeId.Uint32
     | TypeId.Float ->
-        do! bprintfn "mov rbx, 0"
         do! bprintfn "pop rbx"
         do! bprintfn "mov dword [rax], ebx"
     | TypeId.Int64
@@ -205,11 +200,10 @@ let writeCopyFromStack (typ: TypeRef) : TypeCheckerM.M<NasmContext, unit> = tche
     | TypeId.Double
     | TypeId.Pointer _
     | TypeId.Bool ->
-        do! bprintfn "mov rbx, 0"
         do! bprintfn "pop rbx"
         do! bprintfn "mov qword [rax], rbx"
     | TypeId.Void -> yield! sourceFuncContext (fatalDiag' "Type 'void' cannot be copied from stack.")
-    | TypeId.Named typename ->
+    | TypeId.Named _ ->
         let! size = sourceContext (getTypeIdSize typ)
         do! bprintfn $"push %d{size}"
         do! bprintfn "push rax"
@@ -240,7 +234,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
         | Expression.Constant (Value.String str) ->
             let stringLabel = getStringLabel str
-            do! bprintfn "mov rax, 0"
             do! bprintfn $"lea rax, byte [%s{stringLabel}]"
             do! bprintfn "push rax"
 
@@ -256,11 +249,10 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
         | Expression.Constant (Value.Number number) ->
             let number = number2nasm number
-            do! bprintfn "mov rax, 0"
             do! bprintfn $"mov rax, %s{number}"
             do! bprintfn "push rax"
 
-        | Expression.Variable name as expression ->
+        | Expression.Variable _ as expression ->
             let! exprType = sourceContext (getExpressionType expression)
             do! writeExpressionAddress expression
             do! writeCopyToStack exprType
@@ -310,9 +302,8 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             match TypeId.unwrapConst typ.TypeId with
             | TypeId.Named typename ->
                 let! typeDecl = checkWithContext' (fun c -> { c.WithSource () with CurrentSource = typ.Source }) (locateTypeDecl typename)
-                let! fieldOffset, fieldSize, fieldType = getFieldOffsetSizeType typeDecl memberName
+                let! fieldOffset, _, fieldType = getFieldOffsetSizeType typeDecl memberName
                 do! writeExpressionAddress leftExpr
-                do! bprintfn "mov rax, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn $"add rax, %d{fieldOffset}"
                 do! bprintfn "push rax"
@@ -321,9 +312,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
         | Expression.MemberAccess (Expression.Variable alias, name) when getAliasedSource alias ssourceContext |> Result.isOk ->
             let! varDecl = sourceContext (locateVariableDecl { Name = name; Alias = Some alias })
-            let! size = sourceContext (getTypeIdSize { TypeId = varDecl.Variable.TypeId; Source  = varDecl.Source })
             let label = getLabel varDecl.Variable.Name varDecl.Source varDecl.Variable.Modifier
-            do! bprintfn "mov rax, 0"
             do! bprintfn $"lea rax, qword [%s{label}]"
             do! bprintfn "push rax"
             do! writeCopyToStack { TypeId = varDecl.Variable.TypeId; Source = varDecl.Source }
@@ -333,9 +322,8 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             match TypeId.unwrapConst typ.TypeId with
             | TypeId.Named typename ->
                 let! typeDecl = checkWithContext' (fun c -> { c.WithSource () with CurrentSource = typ.Source }) (locateTypeDecl typename)
-                let! fieldOffset, fieldSize, fieldType = getFieldOffsetSizeType typeDecl name
+                let! fieldOffset, _, fieldType = getFieldOffsetSizeType typeDecl name
                 do! writeExpressionAddress left
-                do! bprintfn "mov rax, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn $"add rax, %d{fieldOffset}"
                 do! bprintfn "push rax"
@@ -351,17 +339,15 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
             do! writeExpressionAddress left
             do! writeExpression indexExpr
-            do! bprintfn "mov rax, 0"
-            do! bprintfn "mov rbx, 0"
             do! bprintfn "pop rbx"
             do! bprintfn "pop rax"
             do! bprintfn $"mul rbx, rbx, %+d{size}"
-            do! bprintfn "lea rax, [rax+rbx]"
+            do! bprintfn "lea rax, qword [rax+rbx]"
             do! bprintfn "push rax"
             do! writeCopyToStack { TypeId = arraySubitemType; Source = arrayType.Source }
 
         | Expression.StructCreation (name, fields) as expr ->
-            failwithf "Struct creation to be implemented."
+            failwith "Struct creation to be implemented."
 
         | Expression.Bininversion expr ->
             do! writeExpression expr
@@ -385,16 +371,12 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             if (TypeId.isPointerType leftType || TypeId.isPointerType rightType) &&
                (TypeId.isUnsigned leftType || TypeId.isUnsigned rightType) then
 
-                do! bprintfn "mov rax, 0"
-                do! bprintfn "mov rbx, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "pop rbx"
                 do! bprintfn "add rax, rbx"
                 do! bprintfn "push rax"
 
             elif TypeId.isIntegerType leftType && TypeId.isIntegerType rightType then
-                do! bprintfn "mov rax, 0"
-                do! bprintfn "mov rbx, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "pop rbx"
                 do! bprintfn "add rax, rbx"
@@ -422,16 +404,12 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             if (TypeId.isPointerType leftType || TypeId.isPointerType rightType) &&
                (TypeId.isUnsigned leftType || TypeId.isUnsigned rightType) then
 
-                do! bprintfn "mov rax, 0"
-                do! bprintfn "mov rbx, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "pop rbx"
                 do! bprintfn "sub rax, rbx"
                 do! bprintfn "push rax"
 
             elif TypeId.isIntegerType leftType && TypeId.isIntegerType rightType then
-                do! bprintfn "mov rax, 0"
-                do! bprintfn "mov rbx, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "pop rbx"
                 do! bprintfn "sub rax, rbx"
@@ -457,16 +435,12 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! writeExpression left
 
             if TypeId.isSigned leftType && TypeId.isSigned rightType then
-                do! bprintfn "mov rax, 0"
-                do! bprintfn "mov rbx, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "pop rbx"
                 do! bprintfn "imul rax, rbx"
                 do! bprintfn "push rax"
 
             elif TypeId.isUnsigned leftType && TypeId.isUnsigned rightType then
-                do! bprintfn "mov rax, 0"
-                do! bprintfn "mov rbx, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "pop rbx"
                 do! bprintfn "mul rax, rbx"
@@ -492,16 +466,12 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! writeExpression left
 
             if TypeId.isSigned leftType && TypeId.isSigned rightType then
-                do! bprintfn "mov rax, 0"
-                do! bprintfn "mov rbx, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "pop rbx"
                 do! bprintfn "idiv rax, rbx"
                 do! bprintfn "push rax"
 
             elif TypeId.isUnsigned leftType && TypeId.isUnsigned rightType then
-                do! bprintfn "mov rax, 0"
-                do! bprintfn "mov rbx, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "pop rbx"
                 do! bprintfn "div rax, rbx"
@@ -535,8 +505,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                (TypeId.isFloat leftType && TypeId.isFloat rightType)  ||
                (TypeId.unwrapConst leftType = TypeId.Bool && TypeId.unwrapConst rightType = TypeId.Bool) then
 
-                do! bprintfn "mov rax, 0"
-                do! bprintfn "mov rbx, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "pop rbx"
                 do! bprintfn "cmp rax, rbx"
@@ -566,8 +534,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                (TypeId.isIntegerType leftType && TypeId.isIntegerType rightType) ||
                (TypeId.unwrapConst leftType = TypeId.Bool && TypeId.unwrapConst rightType = TypeId.Bool) then
 
-                do! bprintfn "mov rax, 0"
-                do! bprintfn "mov rbx, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "pop rbx"
                 do! bprintfn "cmp rax, rbx"
@@ -596,8 +562,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                (TypeId.isUnsigned leftType || TypeId.isUnsigned rightType)) ||
                (TypeId.isIntegerType leftType && TypeId.isIntegerType rightType) then
 
-                do! bprintfn "mov rax, 0"
-                do! bprintfn "mov rbx, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "pop rbx"
                 do! bprintfn "cmp rax, rbx"
@@ -640,8 +604,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                 (TypeId.isUnsigned leftType || TypeId.isUnsigned rightType)) ||
                (TypeId.isIntegerType leftType && TypeId.isIntegerType rightType) then
 
-                do! bprintfn "mov rax, 0"
-                do! bprintfn "mov rbx, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "pop rbx"
                 do! bprintfn "cmp rax, rbx"
@@ -686,8 +648,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                 (TypeId.isUnsigned leftType || TypeId.isUnsigned rightType) ||
                 (TypeId.isIntegerType leftType || TypeId.isIntegerType rightType)) then
 
-                do! bprintfn "mov rax, 0"
-                do! bprintfn "mov rbx, 0"
                 do! bprintfn "cmp rax, rbx"
                 do! bprintfn $"ja %s{label1}"
                 do! bprintfn $"push %s{nasmFalseConst}"
@@ -727,8 +687,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                 (TypeId.isUnsigned leftType || TypeId.isUnsigned rightType) ||
                 (TypeId.isIntegerType leftType || TypeId.isIntegerType rightType)) then
 
-                do! bprintfn "mov rax, 0"
-                do! bprintfn "mov rbx, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "pop rbx"
                 do! bprintfn "cmp rax, rbx"
@@ -771,8 +729,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             if TypeId.isIntegerType leftType && TypeId.isIntegerType rightType then
                 do! writeExpression right
                 do! writeExpression left
-                do! bprintfn "mov rax, 0"
-                do! bprintfn "mov rbx, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "pop rbx"
                 do! bprintfn "or rax, rbx"
@@ -780,7 +736,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
             elif TypeId.isBool leftType && TypeId.isBool rightType then
                 do! writeExpression left
-                do! bprintfn "mov rax, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "cmp rax, 0"
                 do! bprintfn $"je %s{rightBranch}"
@@ -788,7 +743,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                 do! bprintfn $"jmp %s{endOfOrBranch}"
                 do! bprintfn $"%s{rightBranch}:"
                 do! writeExpression right
-                do! bprintfn "mov rax, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "cmp rax, 0"
                 do! bprintfn $"je %s{falseBranch}"
@@ -811,8 +765,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             if TypeId.isIntegerType leftType && TypeId.isIntegerType rightType then
                 do! writeExpression right
                 do! writeExpression left
-                do! bprintfn "mov rax, 0"
-                do! bprintfn "mov rbx, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "pop rbx"
                 do! bprintfn "and rax, rbx"
@@ -820,7 +772,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
             elif TypeId.isBool leftType && TypeId.isBool rightType then
                 do! writeExpression left
-                do! bprintfn "mov rax, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "cmp rax, 0"
                 do! bprintfn $"je %s{falseBranch}"
@@ -846,8 +797,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             if TypeId.isIntegerType leftType && TypeId.isIntegerType rightType then
                 do! writeExpression right
                 do! writeExpression left
-                do! bprintfn "mov rax, 0"
-                do! bprintfn "mov rbx, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "pop rbx"
                 do! bprintfn "xor rax, rbx"
@@ -864,8 +813,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             if TypeId.isIntegerType leftType && TypeId.isIntegerType rightType then
                 do! writeExpression right
                 do! writeExpression left
-                do! bprintfn "mov rax, 0"
-                do! bprintfn "mov rbx, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "pop rbx"
                 do! bprintfn "shr rax, rbx"
@@ -882,8 +829,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             if TypeId.isIntegerType leftType && TypeId.isIntegerType rightType then
                 do! writeExpression right
                 do! writeExpression left
-                do! bprintfn "mov rax, 0"
-                do! bprintfn "mov rbx, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "pop rbx"
                 do! bprintfn "shl rax, rbx"
@@ -900,26 +845,23 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         | Expression.Variable name ->
             match Map.tryFind name stackEnv with
             | Some stackOffset ->
-                do! bprintfn "mov rax, 0"
                 do! bprintfn $"lea rax, byte [rbp%+d{stackOffset}]"
                 do! bprintfn "push rax"
             | None ->
                 let! varDecl = sourceContext (locateVariableDecl { Name = name; Alias = None })
                 let label = getLabel varDecl.Variable.Name varDecl.Source varDecl.Variable.Modifier
-                do! bprintfn "mov rax, 0"
                 do! bprintfn $"lea rax, byte [%s{label}]"
                 do! bprintfn "push rax"
 
-        | Expression.MemberAccess (Expression.Variable varname, memberName)
+        | Expression.MemberAccess (Expression.Variable varname as variable, memberName)
             when isStructVariableWithMember varname memberName ssourceContext ->
-            let! varDecl = sourceContext (locateVariableDecl { Name = varname; Alias = None })
-            match TypeId.unwrapConst varDecl.Variable.TypeId with
+            let! variableType = sourceContext (getExpressionType variable)
+            match TypeId.unwrapConst variableType.TypeId with
             | TypeId.Named typename ->
-                let! typeDecl = checkWithContext' (fun c -> { c.WithSource () with CurrentSource = varDecl.Source }) (locateTypeDecl typename)
-                let label = getLabel varDecl.Variable.Name varDecl.Source varDecl.Variable.Modifier
-                let! fieldOffset, fieldSize, _ = getFieldOffsetSizeType typeDecl memberName
-                do! bprintfn "mov rax, 0"
-                do! bprintfn $"lea rax, byte [%s{label}]"
+                let! typeDecl = checkWithContext' (fun c -> { c.WithSource () with CurrentSource = variableType.Source }) (locateTypeDecl typename)
+                let! fieldOffset, _, _ = getFieldOffsetSizeType typeDecl memberName
+                do! writeExpressionAddress variable
+                do! bprintfn "pop rax"
                 do! bprintfn $"add rax, %d{fieldOffset}"
                 do! bprintfn "push rax"
             | typ -> failwithf $"Should not happen. Type '%O{typ}' should have been covered by isStructVariableWithMember function."
@@ -928,7 +870,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             when getAliasedSource alias ssourceContext |> Result.isOk ->
             let! varDecl = sourceContext (locateVariableDecl { Name = name; Alias = Some alias })
             let label = getLabel varDecl.Variable.Name varDecl.Source varDecl.Variable.Modifier
-            do! bprintfn "mov rax, 0"
             do! bprintfn $"lea rax, byte [%s{label}]"
             do! bprintfn "push rax"
 
@@ -939,7 +880,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                 let! typeDecl = checkWithContext' (fun c -> { c.WithSource () with CurrentSource = typ.Source }) (locateTypeDecl typename)
                 let! fieldOffset, fieldSize, fieldType = getFieldOffsetSizeType typeDecl memberName
                 do! writeExpressionAddress left
-                do! bprintfn "mov rax, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn $"add rax, %d{fieldOffset}"
                 do! bprintfn "push rax"
@@ -952,8 +892,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
             do! writeExpressionAddress array
             do! writeExpression index
-            do! bprintfn "mov rax, 0"
-            do! bprintfn "mov rbx, 0"
             do! bprintfn "pop rbx"
             do! bprintfn "pop rax"
             do! bprintfn $"mul rbx, rbx, %d{size}"
@@ -1007,7 +945,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             let endOfIfBranch = allocator.AllocateLabel "end_of_if"
             let writeIfCond (ifCond: IfCond) elseBranch : TypeCheckerM.M<NasmContext, unit> = tchecker {
                 do! writeExpression ifCond.Condition
-                do! bprintf $"mov rax, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "cmp rax, 0"
                 do! bprintfn $"je %s{elseBranch}"
@@ -1050,8 +987,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! bprintfn $"%s{compareIndexVarLabel}:"
             do! checkWithContext newContext (writeExpression endExpression)
             do! checkWithContext newContext (writeExpression (Expression.Variable indexVariable))
-            do! bprintfn "mov rax, 0"
-            do! bprintfn "mov rbx, 0"
             do! bprintfn "pop rax"
             do! bprintfn "pop rbx"
             do! bprintfn "cmp rax, rbx"
@@ -1072,7 +1007,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
             do! bprintfn $"%s{startOfWhileLoop}:"
             do! writeExpression condition
-            do! bprintfn "mov rax, 0"
             do! bprintfn "pop rax"
             do! bprintfn "cmp rax, 0"
             do! bprintfn $"je %s{endOfWhileLoop}"
@@ -1094,15 +1028,16 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! bprintfn $"jmp %s{endOfFunctionLabel}"
             yield! context
 
-        | Statement.Expression (Expression.FuncCall (name, args) as expression) ->
+        | Statement.Expression (Expression.FuncCall (name, _) as expression) ->
             let! func = sourceContext (locateFunctionDecl name)
             let! size = sourceContext (getExpressionSize expression)
 
             do! writeExpression expression
             match TypeId.isVoid func.Function.ReturnType with
             | true -> ()
-            | false ->
-                do! bprintfn $"add rsp, %d{align size 8}"
+            | false when 1 <= size && size <= 8 ->
+                do! bprintfn "mov rax, 0"
+            | false -> ()
 
             yield! context
 
@@ -1192,8 +1127,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             fprintfn "push rax"
             fprintfn "ret"
         | false when returnSizeFitsReg ->
-            fprintfn "mov rax, 0"
-            fprintfn "mov rbx, 0"
             fprintfn "pop rax ; Move result expression from stack to reg"
             fprintfn "leave"
             fprintfn "pop rbx ; Return address"
@@ -1255,7 +1188,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             | 1 ->
                 fprintfn "mov rax, 0"
                 fprintfn $"mov rax, byte [rbp+%d{index * 8}]"
-                fprintfn $"mov qword [rsp%+d{offset}]"
+                fprintfn $"mov qword [rsp%+d{offset}], rax"
             | 2 ->
                 fprintfn "mov rax, 0"
                 fprintfn $"mov rax, word [rbp+%d{index * 8}]"
@@ -1294,6 +1227,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         let! funcReturnSize = getTypeIdSize { TypeId = func.ReturnType; Source = source }
         let returnSizeFitsReg = List.contains funcReturnSize [ 0; 1; 2; 4; 8 ]
         let firstArgIsResultPtr = not returnSizeFitsReg
+        let dedicatedArgumentForNativeResultRequired = not (TypeId.isVoid func.ReturnType) && funcReturnSize > 8
 
         let arguments =
             List.indexed (List.zip (func.Args |> List.map snd) argsSizes)
@@ -1318,7 +1252,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
         argsToStackCopy ()
 
-        if not (1 <= funcReturnSize && funcReturnSize <= 8) then
+        if dedicatedArgumentForNativeResultRequired then
             fprintfn $"lea rax, qword [rbp-%d{(align funcReturnSize 8) + 8}]"
             fprintfn "push rax"
 

@@ -170,7 +170,7 @@ let locateVariableDecl (name: DotString) : M<SourceContext, VarRef> = tchecker {
     }
 
     match variables |> List.filter (fun vref -> vref.Variable.Name = name.Name) with
-    | [] -> yield! fatalDiag $"Can't find variables with name \"%O{name}\""
+    | [] -> yield! fatalDiag $"Can't find variable with name \"%O{name}\""
     | [ variable ] -> yield variable
     | variables -> yield! fatalDiag $"Found more than 1 (%d{List.length variables}) variables with name \"%O{name}\""
 }
