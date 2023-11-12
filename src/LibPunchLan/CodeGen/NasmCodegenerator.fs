@@ -15,16 +15,18 @@ open FSharp.Reflection
 open System.Security.Cryptography
 
 type StackAllocator () =
-    let mutable totalBytesAllocated = 0
+    let mutable totalBytesAllocated = 0<albytesize>
     let mutable labelCount = 0
 
     member _.TotalBytesAllocated = totalBytesAllocated
 
-    member _.AllocateVar (name: string) (size: int) (env: Map<string, int>) =
+    member _.AllocateVar (name: string) (size: int<albytesize>) (env: Map<string, int<albytesize>>) =
         totalBytesAllocated <- totalBytesAllocated + size
+        assert (((int size) % 8) = 0)
+        assert (((int totalBytesAllocated) % 8) = 0)
         Map.add name -totalBytesAllocated env
 
-    member _.AllocateAnonymousVar (size: int) =
+    member _.AllocateAnonymousVar (size: int<albytesize>) =
             totalBytesAllocated <- totalBytesAllocated + size
             -totalBytesAllocated
 
@@ -38,7 +40,7 @@ type NasmContext =
       CurrentFunction: Function
       Program: Program
       NameTypeEnv: Lazy<Map<string, TypeRef>>
-      StackEnv: Map<string, int>
+      StackEnv: Map<string, int<albytesize>>
       Allocator: StackAllocator
       StringBuilder: StringBuilder }
 
@@ -52,6 +54,13 @@ type NasmContext =
           CurrentFunction = this.CurrentFunction
           Program = this.Program
           NameTypeEnv = this.NameTypeEnv }
+
+type FieldInfo =
+    { TypeDecl: TypeDeclRef
+      Type: TypeRef
+      Name: string
+      Offset: int
+      Size: int<bytesize> }
 
 let bprintf format : TypeCheckerM.M<NasmContext, unit>  = tchecker {
     let! sb = getFromContext (fun c -> c.StringBuilder)
@@ -107,13 +116,12 @@ let number2nasm (number: Number) =
         sprintf $"(%f{dbl})"
     | Number.Negative _ -> failwith "Negative number should have been removed at this point."
 
-let getFieldOffsetSizeType (typ: TypeDeclRef) (name: string) : TypeCheckerM.M<NasmContext, int * int * TypeRef> = tchecker {
-    let folder prev (fieldName, fieldType) : unit -> TypeCheckerM.M<NasmContext, int * (string * (int * int * TypeRef)) list> = (fun () -> tchecker {
+let getField (typ: TypeDeclRef) (name: string) : TypeCheckerM.M<NasmContext, FieldInfo> = tchecker {
+    let folder prev (fieldName, fieldType) : unit -> TypeCheckerM.M<NasmContext, int * FieldInfo list> = (fun () -> tchecker {
         let! offset, xs = prev ()
         let! size = checkWithContext' (fun c -> c.WithSource ()) (getTypeIdSize { TypeId = fieldType; Source = typ.Source })
-        let size = align size 8
-        let xs = xs @ [ (fieldName, (offset, size, { TypeRef.TypeId = fieldType; Source = typ.Source })) ]
-        yield (offset + size, xs)
+        let xs = xs @ [ { FieldInfo.TypeDecl = typ; Type = { TypeId = fieldType; Source = typ.Source }; Name = fieldName; Offset = offset; Size = size } ]
+        yield (offset + (int (align size 8)), xs)
     })
 
     let fields =
@@ -121,9 +129,10 @@ let getFieldOffsetSizeType (typ: TypeDeclRef) (name: string) : TypeCheckerM.M<Na
         |> List.fold folder (fun () ->  tchecker { yield (0, []) })
     let! _, fields = fields ()
 
-    match MList.tryLookup name fields with
-    | Some fieldData -> yield fieldData
-    | None -> yield! checkWithContext' (fun c -> c.WithFunction ()) (fatalDiag' $"Can't find member '%s{name}' in '%O{typ}'")
+    match List.filter (fun f -> f.Name = name) fields with
+    | [] -> yield! checkWithContext' (fun c -> c.WithFunction ()) (fatalDiag' $"Can't find field named '%s{name}' in '%O{typ}'.")
+    | [ field ] -> yield field
+    | fields -> yield! checkWithContext' (fun c -> c.WithFunction ()) (fatalDiag' $"Found more than 1 (%d{List.length fields}) fields named '%s{name}' in '%O{typ}'.")
 }
 
 
@@ -179,7 +188,6 @@ let writeCopyToStack (typ: TypeRef) : TypeCheckerM.M<NasmContext, unit> = tcheck
 /// Copy from stack to address (which is located on top of stack)
 let writeCopyFromStack (typ: TypeRef) : TypeCheckerM.M<NasmContext, unit> = tchecker {
     do! bprintfn "pop rax"
-
     match TypeId.unwrapConst typ.TypeId with
     | TypeId.Char
     | TypeId.Int8
@@ -245,7 +253,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! bprintfn $"push %s{boolStr}"
 
         | Expression.Constant (Value.Char char) ->
-            do! bprintfn $"push %x{int char}"
+            do! bprintfn $"push %x{int char} ; Char '%c{char}'"
 
         | Expression.Constant (Value.Number number) ->
             let number = number2nasm number
@@ -260,7 +268,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         | Expression.FuncCall (name, args) ->
             let! func = sourceContext (locateFunctionDecl name)
             let! funcReturnSize = sourceContext (getTypeIdSize { TypeId = func.Function.ReturnType; Source = func.Source})
-            let funcReturnSizeFitsReg = 1 <= funcReturnSize && funcReturnSize <= 8
+            let funcReturnSizeFitsReg = 1<bytesize> <= funcReturnSize && funcReturnSize <= 8<bytesize>
             let! allocator = getFromContext (fun c -> c.Allocator)
             let resultPointerRequired = not (TypeId.isVoid func.Function.ReturnType) && not funcReturnSizeFitsReg
 
@@ -272,7 +280,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
                 let returnValuePtr = if resultPointerRequired
                                      then allocator.AllocateAnonymousVar (align funcReturnSize 8)
-                                     else 0
+                                     else 0<albytesize>
 
                 if resultPointerRequired then
                     do! bprintfn $"lea rax, qword [rbp-%d{returnValuePtr}]"
@@ -302,12 +310,12 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             match TypeId.unwrapConst typ.TypeId with
             | TypeId.Named typename ->
                 let! typeDecl = checkWithContext' (fun c -> { c.WithSource () with CurrentSource = typ.Source }) (locateTypeDecl typename)
-                let! fieldOffset, _, fieldType = getFieldOffsetSizeType typeDecl memberName
+                let! fieldInfo = getField typeDecl memberName
                 do! writeExpressionAddress leftExpr
                 do! bprintfn "pop rax"
-                do! bprintfn $"add rax, %d{fieldOffset}"
+                do! bprintfn $"add rax, %d{fieldInfo.Offset}"
                 do! bprintfn "push rax"
-                do! writeCopyToStack fieldType
+                do! writeCopyToStack fieldInfo.Type
             | typ -> failwithf $"'%O{typ}' should have been already covered."
 
         | Expression.MemberAccess (Expression.Variable alias, name) when getAliasedSource alias ssourceContext |> Result.isOk ->
@@ -322,12 +330,12 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             match TypeId.unwrapConst typ.TypeId with
             | TypeId.Named typename ->
                 let! typeDecl = checkWithContext' (fun c -> { c.WithSource () with CurrentSource = typ.Source }) (locateTypeDecl typename)
-                let! fieldOffset, _, fieldType = getFieldOffsetSizeType typeDecl name
+                let! fieldInfo = getField typeDecl name
                 do! writeExpressionAddress left
                 do! bprintfn "pop rax"
-                do! bprintfn $"add rax, %d{fieldOffset}"
+                do! bprintfn $"add rax, %d{fieldInfo.Offset} ; Offset to '%O{typeDecl.TypeDecl.Name}'.'%s{name}'"
                 do! bprintfn "push rax"
-                do! writeCopyToStack fieldType
+                do! writeCopyToStack fieldInfo.Type
             | typ -> yield! sourceFuncContext (fatalDiag' $"Member access to '%O{typ}'.%s{name} is not supported.")
 
         | Expression.BinaryExpression binExpr -> do! writeBinaryExpression binExpr
@@ -351,19 +359,22 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
         | Expression.Bininversion expr ->
             do! writeExpression expr
-            do! bprintfn "mov rax, 0"
             do! bprintfn "pop rax"
             do! bprintfn "not rax"
             do! bprintfn "push rax"
     }
 
     and writeBinaryExpression (expression: BinaryExpression) : TypeCheckerM.M<NasmContext, unit> = tchecker {
-        match expression with
-        | BinaryExpression.Plus (left, right) ->
-            let! leftType = sourceContext (getExpressionType left)
-            let! rightType = sourceContext (getExpressionType right)
-            let leftType = leftType.TypeId
-            let rightType = rightType.TypeId
+        let left = expression.Left
+        let right = expression.Right
+        let! leftType = sourceContext (getExpressionType left)
+        let! rightType = sourceContext (getExpressionType left)
+        let leftType = leftType.TypeId
+        let rightType = rightType.TypeId
+        let! allocator = getFromContext (fun c -> c.Allocator)
+
+        match expression.Kind with
+        | BinaryExpressionKind.Plus ->
 
             do! writeExpression right
             do! writeExpression left
@@ -392,11 +403,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' + '%O{rightType}' should have been covered.")
 
-        | BinaryExpression.Minus (left, right) ->
-            let! leftType = sourceContext (getExpressionType left)
-            let! rightType = sourceContext (getExpressionType right)
-            let leftType = leftType.TypeId
-            let rightType = rightType.TypeId
+        | BinaryExpressionKind.Minus ->
 
             do! writeExpression right
             do! writeExpression left
@@ -425,11 +432,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' - '%O{rightType}' should have been covered.")
 
-        | BinaryExpression.Multiply (left, right) ->
-            let! leftType = sourceContext (getExpressionType left)
-            let! rightType = sourceContext (getExpressionType right)
-            let leftType = leftType.TypeId
-            let rightType = rightType.TypeId
+        | BinaryExpressionKind.Multiply ->
 
             do! writeExpression right
             do! writeExpression left
@@ -456,11 +459,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType} * '%O{rightType}' should have been covered.")
 
-        | BinaryExpression.Division (left, right) ->
-            let! leftType = sourceContext (getExpressionType left)
-            let! rightType = sourceContext (getExpressionType right)
-            let leftType = leftType.TypeId
-            let rightType = rightType.TypeId
+        | BinaryExpressionKind.Division ->
 
             do! writeExpression right
             do! writeExpression left
@@ -487,12 +486,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' / '%O{rightType}' should have been covered.")
 
-        | BinaryExpression.Equal (left, right) ->
-            let! leftType = sourceContext (getExpressionType left)
-            let! rightType = sourceContext (getExpressionType right)
-            let leftType = leftType.TypeId
-            let rightType = rightType.TypeId
-            let! allocator = getFromContext (fun c -> c.Allocator)
+        | BinaryExpressionKind.Equal ->
             let label1 = allocator.AllocateLabel "equal"
             let label2 = allocator.AllocateLabel "equal_end"
 
@@ -503,7 +497,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                (TypeId.isUnsigned leftType || TypeId.isUnsigned rightType)) ||
                (TypeId.isIntegerType leftType && TypeId.isIntegerType rightType) ||
                (TypeId.isFloat leftType && TypeId.isFloat rightType)  ||
-               (TypeId.unwrapConst leftType = TypeId.Bool && TypeId.unwrapConst rightType = TypeId.Bool) then
+               (TypeId.isBool leftType && TypeId.isBool rightType) then
 
                 do! bprintfn "pop rax"
                 do! bprintfn "pop rbx"
@@ -517,12 +511,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' == '%O{rightType}' should have been covered.")
 
-        | BinaryExpression.NotEqual (left, right) ->
-            let! leftType = sourceContext (getExpressionType left)
-            let! rightType = sourceContext (getExpressionType right)
-            let leftType = leftType.TypeId
-            let rightType = rightType.TypeId
-            let! allocator = getFromContext (fun c -> c.Allocator)
+        | BinaryExpressionKind.NotEqual ->
             let label1 = allocator.AllocateLabel "not_equal"
             let label2 = allocator.AllocateLabel "not_equal_end"
 
@@ -532,7 +521,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             if ((TypeId.isPointerType leftType || TypeId.isPointerType rightType) &&
                (TypeId.isUnsigned leftType || TypeId.isUnsigned rightType)) ||
                (TypeId.isIntegerType leftType && TypeId.isIntegerType rightType) ||
-               (TypeId.unwrapConst leftType = TypeId.Bool && TypeId.unwrapConst rightType = TypeId.Bool) then
+               (TypeId.isBool leftType && TypeId.isBool rightType) then
 
                 do! bprintfn "pop rax"
                 do! bprintfn "pop rbx"
@@ -546,12 +535,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' != '%O{rightType}' should have been covered.")
 
-        | BinaryExpression.Less (left, right) ->
-            let! leftType = sourceContext (getExpressionType left)
-            let! rightType = sourceContext (getExpressionType right)
-            let leftType = leftType.TypeId
-            let rightType = rightType.TypeId
-            let! allocator = getFromContext (fun c -> c.Allocator)
+        | BinaryExpressionKind.Less ->
             let label1 = allocator.AllocateLabel "less"
             let label2 = allocator.AllocateLabel "less_end"
 
@@ -589,11 +573,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' < '%O{rightType}' should have been covered.")
 
-        | BinaryExpression.LessOrEqual (left, right) ->
-            let! leftType = sourceContext (getExpressionType left)
-            let! rightType = sourceContext (getExpressionType right)
-            let leftType = leftType.TypeId
-            let rightType = rightType.TypeId
+        | BinaryExpressionKind.LessOrEqual ->
             let! label1 = getFromContext (fun c -> c.Allocator.AllocateLabel "less_or_equal")
             let! label2 = getFromContext (fun c -> c.Allocator.AllocateLabel "less_or_equal_end")
 
@@ -633,11 +613,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' <= '%O{rightType}' should have been covered.")
 
-        | BinaryExpression.Greater (left, right) ->
-            let! leftType = sourceContext (getExpressionType left)
-            let! rightType = sourceContext (getExpressionType right)
-            let leftType = leftType.TypeId
-            let rightType = rightType.TypeId
+        | BinaryExpressionKind.Greater ->
             let! label1 = getFromContext (fun c -> c.Allocator.AllocateLabel "greater")
             let! label2 = getFromContext (fun c -> c.Allocator.AllocateLabel "greater_end")
 
@@ -672,11 +648,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' < '%O{rightType}' should have been covered.")
 
-        | BinaryExpression.GreaterOrEqual (left, right) ->
-            let! leftType = sourceContext (getExpressionType left)
-            let! rightType = sourceContext (getExpressionType right)
-            let leftType = leftType.TypeId
-            let rightType = rightType.TypeId
+        | BinaryExpressionKind.GreaterOrEqual ->
             let! label1 = getFromContext (fun c -> c.Allocator.AllocateLabel "greater_or_equal")
             let! label2 = getFromContext (fun c -> c.Allocator.AllocateLabel "greater_or_equal_end")
 
@@ -717,11 +689,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' >= '%O{rightType}' should have been covered.")
 
-        | BinaryExpression.Or (left, right) ->
-            let! leftType = sourceContext (getExpressionType left)
-            let! rightType = sourceContext(getExpressionType right)
-            let leftType = leftType.TypeId
-            let rightType = rightType.TypeId
+        | BinaryExpressionKind.Or ->
             let! rightBranch = getFromContext (fun c -> c.Allocator.AllocateLabel "or_right_branch")
             let! endOfOrBranch = getFromContext (fun c -> c.Allocator.AllocateLabel "or_end_of_branch")
             let! falseBranch = getFromContext (fun c -> c.Allocator.AllocateLabel "or_false_branch")
@@ -754,11 +722,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' or '%O{rightType}' should have been covered.")
 
-        | BinaryExpression.And (left, right) ->
-            let! leftType = sourceContext (getExpressionType left)
-            let! rightType = sourceContext(getExpressionType right)
-            let leftType = leftType.TypeId
-            let rightType = rightType.TypeId
+        | BinaryExpressionKind.And ->
             let! falseBranch = getFromContext (fun c -> c.Allocator.AllocateLabel "and_false_branch")
             let! endOfAndBranch = getFromContext (fun c -> c.Allocator.AllocateLabel "and_end_of_branch")
 
@@ -776,7 +740,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                 do! bprintfn "cmp rax, 0"
                 do! bprintfn $"je %s{falseBranch}"
                 do! writeExpression right
-                do! bprintfn "mov rax, 0"
                 do! bprintfn "pop rax"
                 do! bprintfn "cmp rax, 0"
                 do! bprintfn $"je %s{falseBranch}"
@@ -788,11 +751,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' and '%O{rightType}' should have been covered")
 
-        | BinaryExpression.Xor (left, right) ->
-            let! leftType = sourceContext (getExpressionType left)
-            let! rightType = sourceContext(getExpressionType right)
-            let leftType = leftType.TypeId
-            let rightType = rightType.TypeId
+        | BinaryExpressionKind.Xor ->
 
             if TypeId.isIntegerType leftType && TypeId.isIntegerType rightType then
                 do! writeExpression right
@@ -804,11 +763,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' xor '%O{rightType}' should have been covered.")
 
-        | BinaryExpression.RShift (left, right) ->
-            let! leftType = sourceContext (getExpressionType left)
-            let! rightType = sourceContext(getExpressionType right)
-            let leftType = leftType.TypeId
-            let rightType = rightType.TypeId
+        | BinaryExpressionKind.RShift ->
 
             if TypeId.isIntegerType leftType && TypeId.isIntegerType rightType then
                 do! writeExpression right
@@ -820,11 +775,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' >> '%O{rightType}' should have been covered.")
 
-        | BinaryExpression.LShift (left, right) ->
-            let! leftType = sourceContext (getExpressionType left)
-            let! rightType = sourceContext(getExpressionType right)
-            let leftType = leftType.TypeId
-            let rightType = rightType.TypeId
+        | BinaryExpressionKind.LShift ->
 
             if TypeId.isIntegerType leftType && TypeId.isIntegerType rightType then
                 do! writeExpression right
@@ -859,10 +810,10 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             match TypeId.unwrapConst variableType.TypeId with
             | TypeId.Named typename ->
                 let! typeDecl = checkWithContext' (fun c -> { c.WithSource () with CurrentSource = variableType.Source }) (locateTypeDecl typename)
-                let! fieldOffset, _, _ = getFieldOffsetSizeType typeDecl memberName
+                let! fieldInfo = getField typeDecl memberName
                 do! writeExpressionAddress variable
                 do! bprintfn "pop rax"
-                do! bprintfn $"add rax, %d{fieldOffset}"
+                do! bprintfn $"add rax, %d{fieldInfo.Offset} ; Offset to '%s{typeDecl.TypeDecl.Name}.'%s{memberName}'"
                 do! bprintfn "push rax"
             | typ -> failwithf $"Should not happen. Type '%O{typ}' should have been covered by isStructVariableWithMember function."
 
@@ -878,10 +829,10 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             match TypeId.unwrapConst typ.TypeId with
             | TypeId.Named typename ->
                 let! typeDecl = checkWithContext' (fun c -> { c.WithSource () with CurrentSource = typ.Source }) (locateTypeDecl typename)
-                let! fieldOffset, fieldSize, fieldType = getFieldOffsetSizeType typeDecl memberName
+                let! fieldInfo = getField typeDecl memberName
                 do! writeExpressionAddress left
                 do! bprintfn "pop rax"
-                do! bprintfn $"add rax, %d{fieldOffset}"
+                do! bprintfn $"add rax, %d{fieldInfo.Offset} ; Offset to '%s{typeDecl.TypeDecl.Name}.'%s{memberName}'"
                 do! bprintfn "push rax"
             | typ -> yield! sourceFuncContext (fatalDiag' $"Member access '%O{typ}'.%s{memberName} is not supported.")
 
@@ -972,7 +923,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
         | Statement.For (indexVariable, startExpression, endExpression, stepExpression, body) ->
             let! source, allocator, stackEnv, nameTypeEnv = getFromContext (fun c -> (c.CurrentSource, c.Allocator, c.StackEnv, c.NameTypeEnv))
-            let newStackEnv = allocator.AllocateVar indexVariable 8 stackEnv
+            let newStackEnv = allocator.AllocateVar indexVariable 8<albytesize> stackEnv
             let newNameTypeEnv = lazy (Map.add indexVariable { TypeId = TypeId.Int64; Source = source } nameTypeEnv.Value)
             let! newContext = getFromContext (fun c -> { c with NameTypeEnv = newNameTypeEnv; StackEnv = newStackEnv })
             let stepExpression = stepExpression |> Option.defaultValue (Expression.Constant (Value.Number (Number.Integer [| DecInt.One |])))
@@ -1035,7 +986,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! writeExpression expression
             match TypeId.isVoid func.Function.ReturnType with
             | true -> ()
-            | false when 1 <= size && size <= 8 ->
+            | false when 1<bytesize> <= size && size <= 8<bytesize> ->
                 do! bprintfn "mov rax, 0"
             | false -> ()
 
@@ -1072,9 +1023,9 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             List.map (fun t -> getTypeIdSize { TypeId = t; Source = context.CurrentSource })
             |> unwrapList
         let! funcReturnSize = getTypeIdSize { TypeId = func.ReturnType; Source = context.CurrentSource }
-        let returnSizeFitsReg = 1 <= funcReturnSize && funcReturnSize <= 8
+        let returnSizeFitsReg = 1<bytesize> <= funcReturnSize && funcReturnSize <= 8<bytesize>
         let firstArgIsResultPtr = not (TypeId.isVoid func.ReturnType) && not returnSizeFitsReg
-        let initialArgOffset = if firstArgIsResultPtr then 24 else 16 // 24 is (old rbp(8) + ret addr(8) + pointer(8)), 16 is (old rbp(8) + ret addr(8))
+        let initialArgOffset = if firstArgIsResultPtr then 24<albytesize> else 16<albytesize> // 24 is (old rbp(8) + ret addr(8) + pointer(8)), 16 is (old rbp(8) + ret addr(8))
 
         let stackEnv, _ =
             List.zip (List.map fst func.Args) argsSizes
@@ -1112,7 +1063,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         fprintfn "%%push"
         fprintfn $"static %s{funcLabel}"
         fprintfn $"%s{funcLabel}:"
-        fprintfn $"enter %d{align stackAllocator.TotalBytesAllocated 8}, 0"
+        fprintfn $"enter %d{stackAllocator.TotalBytesAllocated}, 0"
         fprintfn ";;; Body"
         fprintfn $"%O{funcBodyStr}"
         fprintfn ";;; End of body"
@@ -1155,8 +1106,8 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         let! source = getFromContext (fun c -> c.CurrentSource)
         let! argsSizes = func.Args |> List.map snd |> List.map (fun t -> getTypeIdSize { TypeId = t; Source = source }) |> unwrapList
 
-        let copyRegArg reg offset argSize = (fun () ->
-            match argSize with
+        let copyRegArg reg (offset: int<albytesize>) (argSize: int<bytesize>) = (fun () ->
+            match int argSize with
             | 0 -> failwith "Can't copy argument of size 0."
             | 1 ->
                 fprintfn $"mov rax, %s{reg}"
@@ -1179,11 +1130,11 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                 fprintfn $"push %s{reg}"
                 fprintfn "memcopy")
 
-        let copyFloatArg reg offset = (fun () ->
+        let copyFloatArg reg (offset: int<albytesize>) = (fun () ->
             fprintfn $"movsd qword [rsp%+d{offset}], %s{reg}")
 
-        let copyStackArg index offset argSize = (fun () ->
-            match argSize with
+        let copyStackArg index (offset: int<albytesize>) (argSize: int<bytesize>) = (fun () ->
+            match int argSize with
             | 0 -> failwith "Can't copy argument of size 0"
             | 1 ->
                 fprintfn "mov rax, 0"
@@ -1209,7 +1160,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                 fprintfn "push rax"
                 fprintfn "memcopy")
 
-        let copyArgsFromMsX64ToStack (offset, writer: unit -> unit) (argIndex, argType, argSize) =
+        let copyArgsFromMsX64ToStack (offset, writer: unit -> unit) (argIndex, argType, argSize: int<bytesize>) =
             let newWriter =
                 match argIndex with
                 | 0 when TypeId.isFloat argType -> copyFloatArg "xmm0" offset
@@ -1225,9 +1176,9 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             (offset, writer >> newWriter)
 
         let! funcReturnSize = getTypeIdSize { TypeId = func.ReturnType; Source = source }
-        let returnSizeFitsReg = List.contains funcReturnSize [ 0; 1; 2; 4; 8 ]
+        let returnSizeFitsReg = List.contains funcReturnSize [ 0<bytesize>; 1<bytesize>; 2<bytesize>; 4<bytesize>; 8<bytesize> ]
         let firstArgIsResultPtr = not returnSizeFitsReg
-        let dedicatedArgumentForNativeResultRequired = not (TypeId.isVoid func.ReturnType) && funcReturnSize > 8
+        let dedicatedArgumentForNativeResultRequired = not (TypeId.isVoid func.ReturnType) && funcReturnSize > 8<bytesize>
 
         let arguments =
             List.indexed (List.zip (func.Args |> List.map snd) argsSizes)
@@ -1236,16 +1187,16 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                             arguments |> List.map (fun (index, argType, argSize) -> (index + 1, argType, argSize))
                         else arguments
 
-        let memoryToAllocate, argsToStackCopy =
-            arguments |> List.fold copyArgsFromMsX64ToStack (0, (fun () -> ()))
-        let memoryToAllocate = if firstArgIsResultPtr then memoryToAllocate + 8 else memoryToAllocate
-        let memoryToAllocate = if not (1 <= funcReturnSize && funcReturnSize <= 8) then memoryToAllocate + (align funcReturnSize 8) else memoryToAllocate
+        let (memoryToAllocate: int<albytesize>), argsToStackCopy =
+            arguments |> List.fold copyArgsFromMsX64ToStack (0<albytesize>, (fun () -> ()))
+        let memoryToAllocate : int<albytesize> = if firstArgIsResultPtr then memoryToAllocate + 8<albytesize> else memoryToAllocate
+        let memoryToAllocate : int<albytesize> = if not (1<bytesize> <= funcReturnSize && funcReturnSize <= 8<bytesize>) then memoryToAllocate + (align funcReturnSize 8) else memoryToAllocate
 
         fprintfn $";;; Export wrapper for '%s{func.Name}' function"
         fprintfn "%%push"
         fprintfn $"global %s{func.Name}"
         fprintfn $"%s{func.Name}:"
-        fprintfn $"enter %d{align memoryToAllocate 8}, 0"
+        fprintfn $"enter %d{memoryToAllocate}, 0"
 
         if firstArgIsResultPtr then
             fprintfn "mov qword [rbp-8], rcx"
@@ -1253,7 +1204,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         argsToStackCopy ()
 
         if dedicatedArgumentForNativeResultRequired then
-            fprintfn $"lea rax, qword [rbp-%d{(align funcReturnSize 8) + 8}]"
+            fprintfn $"lea rax, qword [rbp-%d{(align funcReturnSize 8) + 8<albytesize>}]"
             fprintfn "push rax"
 
         fprintfn $"call %s{getLabel' func.Name source}"
@@ -1263,12 +1214,12 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             fprintfn "mov rax, 0"
             fprintfn "leave"
             fprintfn "ret"
-        | false when 1 <= funcReturnSize && funcReturnSize <= 8 ->
-            match funcReturnSize with
+        | false when 1<bytesize> <= funcReturnSize && funcReturnSize <= 8<bytesize> ->
+            match int funcReturnSize with
             | 0 -> failwith "Return size can't be 0 here."
             | _ when TypeId.isFloat func.ReturnType ->
                 fprintfn "push rax"
-                fprintfn "movsd qword [rsp], xmm0"
+                fprintfn "movsd xmm0, qword [rsp]"
                 fprintfn "add rsp, 8"
                 fprintfn "leave"
                 fprintfn "ret"
@@ -1285,7 +1236,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             fprintfn $"push %d{funcReturnSize}"
             fprintfn "mov rax, qword [rbp-8]"
             fprintfn "push rax"
-            fprintfn $"lea rax, qword[rbp-%d{(align funcReturnSize 8) + 8}]"
+            fprintfn $"lea rax, qword[rbp-%d{(align funcReturnSize 8) + 8<albytesize>}]"
             fprintfn "push rax"
             fprintfn "memcopy"
             fprintfn "mov rax, 0"

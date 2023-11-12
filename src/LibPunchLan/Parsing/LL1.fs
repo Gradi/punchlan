@@ -89,10 +89,10 @@ module private rec Expressions =
             match! next with
             | { Lexeme = Lexeme.Keyword Keyword.Or } ->
                 let! right = parseExpr1 ()
-                return! doParse (Expression.BinaryExpression <| BinaryExpression.Or (left, right))
+                return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.Or })
             | { Lexeme = Lexeme.Keyword Keyword.And } ->
                 let! right = parseExpr1 ()
-                return! doParse (Expression.BinaryExpression <| BinaryExpression.And (left, right))
+                return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.And })
             | input ->
                 do! returnLex input
                 return left
@@ -107,22 +107,22 @@ module private rec Expressions =
             match! next with
             | { Lexeme = Lexeme.LABracket } ->
                 let! right = parseExpr2 ()
-                return! doParse (Expression.BinaryExpression <| BinaryExpression.Less (left, right))
+                return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.Less })
             | { Lexeme = Lexeme.Operator "<=" } ->
                 let! right = parseExpr2 ()
-                return! doParse (Expression.BinaryExpression <| BinaryExpression.LessOrEqual (left, right))
+                return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.LessOrEqual })
             | { Lexeme = Lexeme.Operator "==" } ->
                 let! right = parseExpr2 ()
-                return! doParse (Expression.BinaryExpression <| BinaryExpression.Equal (left, right))
+                return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.Equal })
             | { Lexeme = Lexeme.RABracket } ->
                 let! right = parseExpr2 ()
-                return! doParse (Expression.BinaryExpression <| BinaryExpression.Greater (left, right))
+                return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.Greater })
             | { Lexeme = Lexeme.Operator ">=" } ->
                 let! right = parseExpr2 ()
-                return! doParse (Expression.BinaryExpression <| BinaryExpression.GreaterOrEqual (left, right))
+                return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.GreaterOrEqual })
             | { Lexeme = Lexeme.Operator "!=" } ->
                 let! right = parseExpr2 ()
-                return! doParse (Expression.BinaryExpression <| BinaryExpression.NotEqual (left, right))
+                return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.NotEqual })
             | input ->
                 do! returnLex input
                 return left
@@ -137,13 +137,13 @@ module private rec Expressions =
             match! next with
             | { Lexeme = Lexeme.Keyword Keyword.Xor } ->
                 let! right = parseExpr3 ()
-                return! doParse (Expression.BinaryExpression <| BinaryExpression.Xor (left, right))
+                return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.Xor })
             | { Lexeme = Lexeme.Operator ">>" } ->
                 let! right = parseExpr3 ()
-                return! doParse (Expression.BinaryExpression <| BinaryExpression.RShift (left, right))
+                return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.RShift })
             | { Lexeme = Lexeme.Operator "<<" } ->
                 let! right = parseExpr3 ()
-                return! doParse (Expression.BinaryExpression <| BinaryExpression.LShift (left, right))
+                return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.LShift })
             | input ->
                 do! returnLex input
                 return left
@@ -158,10 +158,10 @@ module private rec Expressions =
             match! next with
             | { Lexeme = Lexeme.Operator "+" } ->
                 let! right = parseExpr4 ()
-                return! doParse (Expression.BinaryExpression <| BinaryExpression.Plus (left, right))
+                return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.Plus })
             | { Lexeme = Lexeme.Operator "-" } ->
                 let! right = parseExpr4 ()
-                return! doParse (Expression.BinaryExpression <| BinaryExpression.Minus (left, right))
+                return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right  = right; Kind = BinaryExpressionKind.Minus })
             | input ->
                 do! returnLex input
                 return left
@@ -176,10 +176,10 @@ module private rec Expressions =
             match! next with
             | { Lexeme = Lexeme.Operator "*" } ->
                 let! right = parseExpr5 ()
-                return! doParse (Expression.BinaryExpression <| BinaryExpression.Multiply (left, right))
+                return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.Multiply })
             | { Lexeme = Lexeme.Operator "/" } ->
                 let! right = parseExpr5 ()
-                return! doParse (Expression.BinaryExpression <| BinaryExpression.Division (left, right))
+                return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.Division })
             | input ->
                 do! returnLex input
                 return left

@@ -2,6 +2,12 @@
 
 open LibPunchLan.Parsing
 
+(* Unaligned size in bytes *)
+[<Measure>] type bytesize
+
+(* Aligned size in bytes *)
+[<Measure>] type albytesize
+
 let getTypeDeclarations (source: Source) =
     source.Declarations
     |> List.map (fun decl ->
@@ -29,7 +35,8 @@ let getFunctionDeclarations (source: Source) =
         | Declaration.Type _ -> None)
     |> List.choose id
 
-let align value mul =
+let align (value: int<bytesize>) (mul: int) : int<albytesize> =
+    let value = (int value)
     match value % mul with
-    | 0 -> value
-    | rem -> value + (mul - rem)
+    | 0 -> LanguagePrimitives.Int32WithMeasure value
+    | rem -> LanguagePrimitives.Int32WithMeasure (value + (mul - rem))

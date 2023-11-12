@@ -52,67 +52,67 @@ let rec private writeTypeId (typ: TypeId) sb =
 let rec private writeExpression (expr: Expression) sb =
     bprintf sb "("
     let writeBinaryExpression (expr: BinaryExpression) =
-        match expr with
-        | Plus (l, r) ->
-            writeExpression l sb
+        match expr.Kind with
+        | Plus ->
+            writeExpression expr.Left sb
             bprintf sb " + "
-            writeExpression r sb
-        | Minus (l, r) ->
-            writeExpression l sb
+            writeExpression expr.Right sb
+        | Minus ->
+            writeExpression expr.Left sb
             bprintf sb " - "
-            writeExpression r sb
-        | Multiply (l, r) ->
-            writeExpression l sb
+            writeExpression expr.Right sb
+        | Multiply ->
+            writeExpression expr.Left sb
             bprintf sb " * "
-            writeExpression r sb
-        | Division (l, r) ->
-            writeExpression l sb
+            writeExpression expr.Right sb
+        | Division ->
+            writeExpression expr.Left sb
             bprintf sb " / "
-            writeExpression r sb
-        | Equal (l, r) ->
-            writeExpression l sb
+            writeExpression expr.Right sb
+        | Equal ->
+            writeExpression expr.Left sb
             bprintf sb " == "
-            writeExpression r sb
-        | NotEqual (l, r) ->
-            writeExpression l sb
+            writeExpression expr.Right sb
+        | NotEqual ->
+            writeExpression expr.Left sb
             bprintf sb " != "
-            writeExpression r sb
-        | Less (l, r) ->
-            writeExpression l sb
+            writeExpression expr.Right sb
+        | Less ->
+            writeExpression expr.Left sb
             bprintf sb " < "
-            writeExpression r sb
-        | LessOrEqual (l, r) ->
-            writeExpression l sb
+            writeExpression expr.Right sb
+        | LessOrEqual ->
+            writeExpression expr.Left sb
             bprintf sb " <= "
-            writeExpression r sb
-        | Greater (l, r) ->
-            writeExpression l sb
+            writeExpression expr.Right sb
+        | Greater ->
+            writeExpression expr.Left sb
             bprintf sb " > "
-            writeExpression r sb
-        | GreaterOrEqual (l, r) ->
-            writeExpression l sb
+            writeExpression expr.Right sb
+        | GreaterOrEqual ->
+            writeExpression expr.Left sb
             bprintf sb " >= "
-            writeExpression r sb
-        | Or (l, r) ->
-            writeExpression l sb
+            writeExpression expr.Right sb
+        | Or ->
+            writeExpression expr.Left sb
             bprintf sb " | "
-            writeExpression r sb
-        | And (l, r) ->
-            writeExpression l sb
+            writeExpression expr.Right sb
+        | And ->
+            writeExpression expr.Left sb
             bprintf sb " & "
-            writeExpression r sb
-        | Xor (l, r) ->
-            writeExpression l sb
+            writeExpression expr.Right sb
+        | Xor ->
+            writeExpression expr.Left sb
             bprintf sb " xor "
-            writeExpression r sb
-        | RShift (l, r) ->
-            writeExpression l sb
+            writeExpression expr.Right sb
+        | RShift ->
+            writeExpression expr.Left sb
             bprintf sb " >> "
-            writeExpression r sb
-        | LShift (l, r) ->
-            writeExpression l sb
+            writeExpression expr.Right sb
+        | LShift ->
+            writeExpression expr.Left sb
             bprintf sb " << "
-            writeExpression r sb
+            writeExpression expr.Right sb
 
 
     match expr with

@@ -134,83 +134,76 @@ let rec getExpressionType (expr: Expression) : TypeCheckerM.M<SourceContext, Typ
             | None -> yield! fatalDiag $"Type \"%O{typeDecl}\" doesn't have field \"%s{field}\""
         | _ -> yield! fatalDiag $"Type \"%O{typ}\" is not struct/union and thus doesn't have field \"%s{field}\""
 
-    | BinaryExpression (BinaryExpression.Plus (left, right))
-    | BinaryExpression (BinaryExpression.Minus (left, right)) ->
-        let! leftType  = getExpressionType left
-        let! rightType = getExpressionType right
+    | BinaryExpression binaryExpr ->
+        let! leftType  = getExpressionType binaryExpr.Left
+        let! rightType = getExpressionType binaryExpr.Right
         let leftTyp = leftType.TypeId
         let rightTyp = rightType.TypeId
 
-        (* If (left is pointer AND right is numeric) OR (left is numeric AND right is pointer) it means
-           we are dealing with pointer arithmetics *)
-        if (TypeId.isPointerType leftTyp && TypeId.isUnsigned rightTyp) then yield leftType
-        elif (TypeId.isPointerType rightTyp && TypeId.isUnsigned leftTyp) then yield rightType
-        else
+        match binaryExpr.Kind with
+        | BinaryExpressionKind.Plus
+        | BinaryExpressionKind.Minus ->
+
+            (* If (left is pointer AND right is numeric) OR (left is numeric AND right is pointer) it means
+               we are dealing with pointer arithmetics *)
+            if (TypeId.isPointerType leftTyp && TypeId.isUnsigned rightTyp) then yield leftType
+            elif (TypeId.isPointerType rightTyp && TypeId.isUnsigned leftTyp) then yield rightType
+            else
+
+                if not (TypeId.isTypesEqual leftType rightType) then
+                    yield! diag $"Arguments for operators '+', '-' has to be the same (%O{leftTyp}, %O{rightTyp})"
+
+                if not (TypeId.isNumericType leftTyp) then
+                    yield! diag "Operators '+', '-' accept only numeric & pointer types"
+
+                if TypeId.isUnsigned leftTyp then yield { leftType with TypeId = TypeId.Uint64 }
+                elif TypeId.isSigned leftTyp then yield { leftType with TypeId = TypeId.Int64 }
+                elif TypeId.isFloat leftTyp then yield { leftType with TypeId = TypeId.Double }
+                else yield! fatalDiag $"Can't determine result type of '%O{leftType} (+ -) '%O{rightType}' operation."
+
+        | BinaryExpressionKind.Multiply
+        | BinaryExpressionKind.Division ->
 
             if not (TypeId.isTypesEqual leftType rightType) then
-                yield! diag $"Arguments for operators '+', '-' has to be the same (%O{leftTyp}, %O{rightTyp})"
-
-            if not (TypeId.isNumericType leftTyp) then
-                yield! diag "Operators '+', '-' accept only numeric & pointer types"
+                yield! diag $"Arguments for operators '*', '/' has to be the same (%O{leftTyp}, %O{rightTyp})"
 
             if TypeId.isUnsigned leftTyp then yield { leftType with TypeId = TypeId.Uint64 }
             elif TypeId.isSigned leftTyp then yield { leftType with TypeId = TypeId.Int64 }
             elif TypeId.isFloat leftTyp then yield { leftType with TypeId = TypeId.Double }
-            else yield! fatalDiag $"Can't determine result type of '%O{leftType} (+ -) '%O{rightType}' operation."
+            else yield! fatalDiag $"Can't determine result type of '%O{leftType} (* /) %O{rightType}' operation."
 
-    | BinaryExpression (BinaryExpression.Multiply (left, right))
-    | BinaryExpression (BinaryExpression.Division (left, right)) ->
-        let! leftType = getExpressionType left
-        let! rightType = getExpressionType right
-        let leftTyp = TypeId.unwrapConst leftType.TypeId
-        let rightTyp = TypeId.unwrapConst rightType.TypeId
+        | BinaryExpressionKind.Equal
+        | BinaryExpressionKind.NotEqual
+        | BinaryExpressionKind.Less
+        | BinaryExpressionKind.LessOrEqual
+        | BinaryExpressionKind.Greater
+        | BinaryExpressionKind.GreaterOrEqual ->
+            if not (TypeId.isBool leftTyp) then yield! diag $"Left boolean comparison argument must be of type bool, not \%O{leftTyp}"
+            if not (TypeId.isBool rightTyp) then yield! diag $"Right boolean comparison argument must be of type bool, not \%O{rightTyp}"
 
-        if not (TypeId.isTypesEqual leftType rightType) then
-            yield! diag $"Arguments for operators '*', '/' has to be the same (%O{leftTyp}, %O{rightTyp})"
+            yield { TypeId = TypeId.Bool; Source = source }
 
-        if TypeId.isUnsigned leftTyp then yield { leftType with TypeId = TypeId.Uint64 }
-        elif TypeId.isSigned leftTyp then yield { leftType with TypeId = TypeId.Int64 }
-        elif TypeId.isFloat leftTyp then yield { leftType with TypeId = TypeId.Double }
-        else yield! fatalDiag $"Can't determine result type of '%O{leftType} (* /) %O{rightType}' operation."
+        | BinaryExpressionKind.Or
+        | BinaryExpressionKind.And ->
 
-    | BinaryExpression (BinaryExpression.Equal (left, right))
-    | BinaryExpression (BinaryExpression.NotEqual (left, right))
-    | BinaryExpression (BinaryExpression.Less (left, right))
-    | BinaryExpression (BinaryExpression.LessOrEqual (left, right))
-    | BinaryExpression (BinaryExpression.Greater (left, right))
-    | BinaryExpression (BinaryExpression.GreaterOrEqual (left, right)) ->
-        let! leftTyp = getExpressionType left
-        let! rightTyp = getExpressionType right
-        if not (TypeId.isBool leftTyp.TypeId) then yield! diag $"Left boolean comparison argument must be of type bool, not \%O{leftTyp}"
-        if not (TypeId.isBool rightTyp.TypeId) then yield! diag $"Right boolean comparison argument must be of type bool, not \%O{rightTyp}"
+            if not (TypeId.isTypesEqual leftType rightType) then
+                yield! diag $"Arguments for operators 'or', 'and' has to be the same (%O{leftTyp}, %O{rightTyp})"
 
-        yield { TypeId = TypeId.Bool; Source = source }
+            if TypeId.isUnsigned leftTyp then yield { leftType with TypeId = TypeId.Uint64 }
+            elif TypeId.isSigned leftTyp then yield { leftType with TypeId = TypeId.Int64 }
+            elif TypeId.isBool leftTyp then yield { leftType with TypeId = TypeId.Bool }
+            else yield! fatalDiag $"Can't determine result type of '%O{leftTyp} (or and) '%O{rightTyp}' operation."
 
-    | BinaryExpression (BinaryExpression.Or (left, right))
-    | BinaryExpression (BinaryExpression.And (left, right)) ->
-        let! leftTyp = getExpressionType left
-        let! rightTyp = getExpressionType right
+        | BinaryExpressionKind.Xor
+        | BinaryExpressionKind.RShift
+        | BinaryExpressionKind.LShift ->
 
-        if not (TypeId.isTypesEqual leftTyp rightTyp) then
-            yield! diag $"Arguments for operators 'or', 'and' has to be the same (%O{leftTyp}, %O{rightTyp})"
+            if not (TypeId.isTypesEqual leftType rightType) then
+                yield! diag $"Arguments for operators 'xor', '>>', '<<' has to be the same (%O{leftTyp}, %O{rightTyp})"
 
-        if TypeId.isUnsigned leftTyp.TypeId then yield { leftTyp with TypeId = TypeId.Uint64 }
-        elif TypeId.isSigned leftTyp.TypeId then yield { leftTyp with TypeId = TypeId.Int64 }
-        elif TypeId.isBool leftTyp.TypeId then yield { leftTyp with TypeId = TypeId.Bool }
-        else yield! fatalDiag $"Can't determine result type of '%O{leftTyp} (or and) '%O{rightTyp}' operation."
-
-    | BinaryExpression (BinaryExpression.Xor (left, right))
-    | BinaryExpression (BinaryExpression.RShift (left, right))
-    | BinaryExpression (BinaryExpression.LShift (left, right)) ->
-        let! leftTyp = getExpressionType left
-        let! rightTyp = getExpressionType right
-
-        if not (TypeId.isTypesEqual leftTyp rightTyp) then
-            yield! diag $"Arguments for operators 'xor', '>>', '<<' has to be the same (%O{leftTyp}, %O{rightTyp})"
-
-        if TypeId.isUnsigned leftTyp.TypeId then yield { leftTyp with TypeId = TypeId.Uint64 }
-        elif TypeId.isSigned rightTyp.TypeId then yield { leftTyp with TypeId = TypeId.Int64 }
-        else yield! fatalDiag $"Can't determine result type of '%O{leftTyp} (>> <<) %O{rightTyp}' operation."
+            if TypeId.isUnsigned leftTyp then yield { leftType with TypeId = TypeId.Uint64 }
+            elif TypeId.isSigned rightTyp then yield { leftType with TypeId = TypeId.Int64 }
+            else yield! fatalDiag $"Can't determine result type of '%O{leftTyp} (>> <<) %O{rightTyp}' operation."
 
     | ArrayAccess (array, indexExpr) ->
         let! arrayType = getExpressionType array
@@ -401,18 +394,18 @@ let checkSourceDeclarations () : TypeCheckerM.M<SourceContext, unit>  = tchecker
         | Declaration.Type typ -> yield! checkTypeDeclaration typ
 }
 
-let rec getTypeIdSize (typ: TypeRef) : TypeCheckerM.M<SourceContext, int> = tchecker {
+let rec getTypeIdSize (typ: TypeRef) : TypeCheckerM.M<SourceContext, int<bytesize>> = tchecker {
     match TypeId.unwrapConst typ.TypeId with
-    | TypeId.Int8 | TypeId.Uint8 -> yield 1
-    | TypeId.Int16 | TypeId.Uint16 -> yield 2
-    | TypeId.Int32 | TypeId.Uint32 -> yield 4
-    | TypeId.Int64 | TypeId.Uint64 -> yield 8
-    | TypeId.Float -> yield 4
-    | TypeId.Double -> yield 8
-    | TypeId.Bool -> yield 8
-    | TypeId.Char -> yield 1
-    | TypeId.Void -> yield 0
-    | TypeId.Pointer _ -> yield 8
+    | TypeId.Int8 | TypeId.Uint8 -> yield 1<bytesize>
+    | TypeId.Int16 | TypeId.Uint16 -> yield 2<bytesize>
+    | TypeId.Int32 | TypeId.Uint32 -> yield 4<bytesize>
+    | TypeId.Int64 | TypeId.Uint64 -> yield 8<bytesize>
+    | TypeId.Float -> yield 4<bytesize>
+    | TypeId.Double -> yield 8<bytesize>
+    | TypeId.Bool -> yield 8<bytesize>
+    | TypeId.Char -> yield 1<bytesize>
+    | TypeId.Void -> yield 0<bytesize>
+    | TypeId.Pointer _ -> yield 8<bytesize>
     | TypeId.Named name ->
         let! typeDecl = checkWithContext' (fun c -> { c with CurrentSource = typ.Source }) (locateTypeDecl name)
         let! fieldSizes =
@@ -422,8 +415,8 @@ let rec getTypeIdSize (typ: TypeRef) : TypeCheckerM.M<SourceContext, int> = tche
             |> unwrapList
 
         match typeDecl.TypeDecl.TypeType with
-        | TypeType.Struct -> yield fieldSizes |> List.sumBy (fun s -> align s 8)
-        | TypeType.Union -> yield align (List.max fieldSizes ) 8
+        | TypeType.Struct -> yield fieldSizes |> List.sumBy (fun s -> align s 8) |> int |> LanguagePrimitives.Int32WithMeasure
+        | TypeType.Union -> yield align (List.max fieldSizes ) 8 |> int |> LanguagePrimitives.Int32WithMeasure
     | typ -> yield failwithf $"This type id should have been covered: %O{typ}"
 }
 

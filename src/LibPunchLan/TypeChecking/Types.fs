@@ -22,29 +22,24 @@ type Diagnostic =
 
 type Diagnostics = Diagnostic list
 
-
-[<NoComparison;ReferenceEquality>]
 type VarRef =
     { Variable: Variable
       Source: Source }
 
     override this.ToString () = sprintf $"%s{this.Source.Filename}:%s{this.Variable.Name}"
 
-[<NoComparison;ReferenceEquality>]
 type FuncRef =
     { Function: Function
       Source: Source }
 
     override this.ToString () = sprintf $"%s{this.Source.Filename}:%s{this.Function.Name}"
 
-[<NoComparison;ReferenceEquality>]
 type TypeRef =
     { TypeId: TypeId
       Source: Source }
 
     override this.ToString () = sprintf $"%s{this.Source.Filename}:%O{this.TypeId}"
 
-[<NoComparison;ReferenceEquality>]
 type TypeDeclRef =
     { TypeDecl: TypeDecl
       Source: Source }

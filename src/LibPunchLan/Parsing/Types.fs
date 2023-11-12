@@ -105,24 +105,29 @@ type Expression =
 
 [<NoComparison;ReferenceEquality>]
 type BinaryExpression =
-    | Plus of Expression * Expression
-    | Minus of Expression * Expression
-    | Multiply of Expression * Expression
-    | Division of Expression * Expression
+    { Left: Expression
+      Right: Expression
+      Kind : BinaryExpressionKind }
 
-    | Equal of Expression * Expression
-    | NotEqual of Expression * Expression
-    | Less of Expression * Expression
-    | LessOrEqual of Expression * Expression
-    | Greater of Expression * Expression
-    | GreaterOrEqual of Expression * Expression
+type BinaryExpressionKind =
+    | Plus
+    | Minus
+    | Multiply
+    | Division
 
-    | Or of Expression * Expression
-    | And of Expression * Expression
+    | Equal
+    | NotEqual
+    | Less
+    | LessOrEqual
+    | Greater
+    | GreaterOrEqual
 
-    | Xor of Expression * Expression
-    | RShift of Expression * Expression
-    | LShift of Expression * Expression
+    | Or
+    | And
+
+    | Xor
+    | RShift
+    | LShift
 
 type Value =
     | String of string
