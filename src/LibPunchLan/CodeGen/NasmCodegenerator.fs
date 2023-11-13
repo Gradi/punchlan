@@ -298,7 +298,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
         | Expression.Constant (Value.String str) ->
             let stringLabel = getStringLabel str
-            do! bprintfn $"lea rax, byte [%s{stringLabel}]"
+            do! bprintfn $"mov rax, %s{stringLabel}"
             do! bprintfn "push rax"
 
         | Expression.Constant (Value.Boolean bool) ->
@@ -855,7 +855,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             | None ->
                 let! varDecl = sourceContext (locateVariableDecl { Name = name; Alias = None })
                 let label = getLabel varDecl.Variable.Name varDecl.Source varDecl.Variable.Modifier
-                do! bprintfn $"lea rax, byte [%s{label}]"
+                do! bprintfn $"mov rax, %s{label}"
                 do! bprintfn "push rax"
 
         | Expression.MemberAccess (Expression.Variable varname as variable, memberName)
@@ -875,7 +875,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             when getAliasedSource alias ssourceContext |> Result.isOk ->
             let! varDecl = sourceContext (locateVariableDecl { Name = name; Alias = Some alias })
             let label = getLabel varDecl.Variable.Name varDecl.Source varDecl.Variable.Modifier
-            do! bprintfn $"lea rax, byte [%s{label}]"
+            do! bprintfn $"mov rax, %s{label}"
             do! bprintfn "push rax"
 
         | Expression.MemberAccess (left, memberName) ->
@@ -1545,7 +1545,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
         member _.Write() =
             fprintfn "bits 64"
-            fprintfn "default rel"
             writeMacros ()
 
             for source in program.Sources do
