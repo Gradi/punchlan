@@ -367,7 +367,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                 let! fieldInfo = getField typeDecl memberName
                 do! writeExpressionAddress leftExpr
                 do! bprintfn "pop rax"
-                do! bprintfn $"add rax, %d{fieldInfo.Offset}"
+                do! bprintfn $"add rax, %d{fieldInfo.Offset} ; Offset to '%O{typeDecl.TypeDecl.Name}'.'%s{memberName}'"
                 do! bprintfn "push rax"
                 do! writeCopyToStack fieldInfo.Type
             | typ -> failwithf $"'%O{typ}' should have been already covered."
@@ -1438,7 +1438,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         match expression with
         | Expression.Constant (Value.String string) ->
             let strLabel = getStringLabel string
-            fprintfn $"%s{strLabel}"
+            fprintfn $"dq %s{strLabel}"
         | Expression.Constant (Value.Number number) -> fprintfn $"%s{number2nasm number}"
         | Expression.Constant (Value.Boolean value) ->
             match value with
@@ -1467,6 +1467,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                     do! writeVariableExpression field
                     fprintfn $"align %d{align size 8},db 0"
                 | _ -> yield! fatalDiag $"Union initializer typ '%O{typDecl}' must consist of exactly 1 field initializer."
+            fprintfn $";;; End of %A{typDecl.TypeDecl.TypeType} named '%O{typDecl}' goes from here"
         | expression ->
             let unionCase, _ = FSharpValue.GetUnionFields (expression, expression.GetType ())
             yield! fatalDiag $"Expression '%s{unionCase.Name}' can't be used for global variables intializers."
