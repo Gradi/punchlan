@@ -102,7 +102,7 @@ let private stringLiteralState (char: Char option) (state: LexerState) =
     | Some ({ Char = _ } as char) -> stateNone (stateAddChar char state)
 
 let private charLiteralState (char: Char option) (state: LexerState) =
-    let emitChar () =
+    let emitChar state =
         match state.CharBuf with
         | [] -> failwith "Unexpected state: char literal state with empty char buffer."
         | [ { Char = '\'' } as char ] -> stateError state char "Unfinished char literal"
@@ -114,9 +114,9 @@ let private charLiteralState (char: Char option) (state: LexerState) =
             stateError state (List.head xs) $"Bad char literal, expected one char in single quotes, but found %s{xsstr}"
 
     match char with
-    | None -> emitChar ()
+    | None -> emitChar state
     | Some { Char = '\\' } -> stateNone { state with State = escapeCharState state.State }
-    | Some { Char = '\'' } -> emitChar ()
+    | Some ({ Char = '\'' } as char )-> emitChar (stateAddChar char state)
     | Some ({ Char = _ } as char) -> stateNone (stateAddChar char state)
 
 let private numberLiteralState (char: Char option) (state: LexerState) =

@@ -17,4 +17,10 @@
     <ProjectReference Include="..\LibPunchLan\LibPunchLan.fsproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="stdlibrary\**\*.pl">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>

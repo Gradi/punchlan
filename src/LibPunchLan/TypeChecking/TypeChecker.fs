@@ -83,7 +83,7 @@ let rec getExpressionType (expr: Expression) : TypeCheckerM.M<SourceContext, Typ
     let! source = getFromContext (fun c -> c.CurrentSource)
 
     match expr with
-    | Constant (Value.String _) -> yield { TypeId = TypeId.Pointer (TypeId.Const TypeId.Char); Source = source }
+    | Constant (Value.String _) -> yield { TypeId = TypeId.Const (TypeId.Pointer (TypeId.Const TypeId.Char)); Source = source }
     | Constant (Value.Number num) -> yield { TypeId = getNumberType num; Source = source }
     | Constant (Value.Boolean _) -> yield { TypeId = TypeId.Bool; Source = source }
     | Constant (Value.Char _) -> yield { TypeId = TypeId.Char; Source = source }

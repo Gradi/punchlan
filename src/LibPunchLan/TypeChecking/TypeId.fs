@@ -66,8 +66,8 @@ let isVoid (typ: TypeId) =
     | _ -> false
 
 let isTypesEqual (expected: TypeRef) (actual: TypeRef) : bool =
-    let left = expected.TypeId
-    let right = actual.TypeId
+    let left = unwrapConst expected.TypeId
+    let right = unwrapConst actual.TypeId
 
     if isSigned left && isSigned right then true
 
@@ -78,5 +78,8 @@ let isTypesEqual (expected: TypeRef) (actual: TypeRef) : bool =
     elif isPointerType left && isUnsigned right then true
 
     else
-        unwrapConst expected.TypeId = unwrapConst actual.TypeId &&
-        expected.Source = actual.Source
+        match unwrapConst left, unwrapConst right with
+        | Named _, Named _ ->
+            unwrapConst expected.TypeId = unwrapConst actual.TypeId &&
+            expected.Source = actual.Source
+        | _ -> left = right

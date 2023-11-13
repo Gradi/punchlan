@@ -14,3 +14,7 @@ indent_size = 2
 [*.{in,out}]
 insert_final_newline = true
 trim_trailing_whitespace = false
+
+[**.pl]
+insert_final_newline = true
+indent_size = 4
