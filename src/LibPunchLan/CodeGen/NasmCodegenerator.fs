@@ -62,6 +62,20 @@ type FieldInfo =
       Offset: int
       Size: int<bytesize> }
 
+type IncomingArgInfo =
+    { Index: int
+      Name: string
+      Type: TypeRef
+      Size: int<bytesize>
+      Offset: int<albytesize> }
+
+type FuncCallInfo =
+    { Args: IncomingArgInfo list
+      ResultSize: int<bytesize>
+      IsResultSizeFitsReg: bool
+      IsFirstArgumentResultPtr: bool }
+
+
 let bprintf format : TypeCheckerM.M<NasmContext, unit>  = tchecker {
     let! sb = getFromContext (fun c -> c.StringBuilder)
     Printf.bprintf sb format
@@ -129,12 +143,43 @@ let getField (typ: TypeDeclRef) (name: string) : TypeCheckerM.M<NasmContext, Fie
         |> List.fold folder (fun () ->  tchecker { yield (0, []) })
     let! _, fields = fields ()
 
-    match List.filter (fun f -> f.Name = name) fields with
+    match fields |> List.filter (fun f -> f.Name = name) with
     | [] -> yield! checkWithContext' (fun c -> c.WithFunction ()) (fatalDiag' $"Can't find field named '%s{name}' in '%O{typ}'.")
     | [ field ] -> yield field
     | fields -> yield! checkWithContext' (fun c -> c.WithFunction ()) (fatalDiag' $"Found more than 1 (%d{List.length fields}) fields named '%s{name}' in '%O{typ}'.")
 }
 
+let getFuncCallInfo (func: Function) : TypeCheckerM.M<SourceContext, FuncCallInfo>  = tchecker {
+    let! source = getFromContext (fun c -> c.CurrentSource)
+    let! argumentSizes =
+        func.Args
+        |> List.map snd
+        |> List.map (fun t -> getTypeIdSize { TypeId = t; Source = source })
+        |> unwrapList
+
+    let! returnSize = getTypeIdSize { TypeId = func.ReturnType; Source = source }
+    let returnSizeFitsReg = 1<bytesize> <= returnSize && returnSize <= 8<bytesize>
+    let isFirstArgResultPtr = not (TypeId.isVoid func.ReturnType) && not returnSizeFitsReg
+    let initialOffset = if isFirstArgResultPtr then 24<albytesize> else 16<albytesize>
+
+    let argumentInfo =
+        List.indexed (List.zip func.Args argumentSizes)
+        |> List.map (fun (index, ((argName, argType), argSize)) ->
+            { IncomingArgInfo.Index = index; Name = argName; Type = { TypeId = argType; Source = source }
+              Size = argSize; Offset = 0<albytesize> })
+
+    let _, argumentInfo =
+        argumentInfo
+        |> List.fold (fun (offset, args) argInfo ->
+            let args = { argInfo with Offset = offset } :: args
+            let offset = offset + (align argInfo.Size 8)
+            (offset, args)) (initialOffset, [])
+
+    yield { FuncCallInfo.Args = argumentInfo
+            ResultSize = returnSize
+            IsFirstArgumentResultPtr = isFirstArgResultPtr
+            IsResultSizeFitsReg = returnSizeFitsReg }
+}
 
 /// Copy from address (located at top of stack) to stack
 let writeCopyToStack (typ: TypeRef) : TypeCheckerM.M<NasmContext, unit> = tchecker {
@@ -267,14 +312,15 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
         | Expression.FuncCall (name, args) ->
             let! func = sourceContext (locateFunctionDecl name)
-            let! funcReturnSize = sourceContext (getTypeIdSize { TypeId = func.Function.ReturnType; Source = func.Source})
+            let! funcReturnSize = sourceContext (getTypeIdSize { TypeId = func.Function.ReturnType; Source = func.Source })
             let funcReturnSizeFitsReg = 1<bytesize> <= funcReturnSize && funcReturnSize <= 8<bytesize>
             let! allocator = getFromContext (fun c -> c.Allocator)
             let resultPointerRequired = not (TypeId.isVoid func.Function.ReturnType) && not funcReturnSizeFitsReg
 
             match func.Function.Modifier with
             | None
-            | Some Modifier.Export ->
+            | Some Modifier.Export
+            | Some Modifier.Extern ->
                 for expression in List.rev args do
                     do! writeExpression expression
 
@@ -297,12 +343,9 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                     do! bprintfn $"sub rsp, %d{align funcReturnSize 8}"
                     do! bprintfn $"push %d{funcReturnSize}"
                     do! bprintfn "push rsp"
-                    do! bprintfn $"lea rax, qword [rbp-%d{returnValuePtr}]"
+                    do! bprintfn $"lea rax, qword [rbp%+d{returnValuePtr}]"
                     do! bprintfn "push rax"
                     do! bprintfn "memcopy"
-
-            | Some Modifier.Extern ->
-                failwith "Extern functions to be implemented."
 
         | Expression.MemberAccess (Expression.Variable variableName as leftExpr, memberName)
             when isStructVariableWithMember variableName memberName ssourceContext ->
@@ -1017,27 +1060,16 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
     let writeNativeFunction (func: Function) : TypeCheckerM.M<SourceContext, unit> = tchecker {
         let! context = context
-        let! argsSizes =
-            func.Args |>
-            List.map snd |>
-            List.map (fun t -> getTypeIdSize { TypeId = t; Source = context.CurrentSource })
-            |> unwrapList
-        let! funcReturnSize = getTypeIdSize { TypeId = func.ReturnType; Source = context.CurrentSource }
-        let returnSizeFitsReg = 1<bytesize> <= funcReturnSize && funcReturnSize <= 8<bytesize>
-        let firstArgIsResultPtr = not (TypeId.isVoid func.ReturnType) && not returnSizeFitsReg
-        let initialArgOffset = if firstArgIsResultPtr then 24<albytesize> else 16<albytesize> // 24 is (old rbp(8) + ret addr(8) + pointer(8)), 16 is (old rbp(8) + ret addr(8))
+        let! argumentsInfo = getFuncCallInfo func
 
-        let stackEnv, _ =
-            List.zip (List.map fst func.Args) argsSizes
-            |> List.fold (fun (env, offset) (name, size) ->
-                let env = Map.add name offset env
-                let offset = offset + (align size 8)
-                (env, offset)) (Map.empty, initialArgOffset)
+        let stackEnv =
+            argumentsInfo.Args
+            |> List.fold (fun env (arg: IncomingArgInfo) -> Map.add arg.Name arg.Offset env) Map.empty
 
         let nameTypeEnv = lazy (
-                func.Args
-                |> List.fold (fun env (name, typeId) ->
-                    Map.add name { TypeId = typeId; Source = context.CurrentSource } env) context.NameTypeEnv.Value
+                argumentsInfo.Args
+                |> List.fold (fun env arg ->
+                    Map.add arg.Name arg.Type env) context.NameTypeEnv.Value
             )
 
         let stackAllocator = StackAllocator ()
@@ -1069,7 +1101,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         fprintfn ";;; End of body"
         fprintfn $" %s{endOfFunctionLabel}:"
 
-        let argsSizesAligned = argsSizes |> List.sumBy (fun s -> align s 8)
+        let argsSizesAligned = argumentsInfo.Args |> List.sumBy (fun s -> align s.Size 8)
         match TypeId.isVoid func.ReturnType with
         | true ->
             fprintfn "leave"
@@ -1077,7 +1109,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             fprintfn $"add rsp, %d{argsSizesAligned} ; Remove incoming arguments"
             fprintfn "push rax"
             fprintfn "ret"
-        | false when returnSizeFitsReg ->
+        | false when argumentsInfo.IsResultSizeFitsReg ->
             fprintfn "pop rax ; Move result expression from stack to reg"
             fprintfn "leave"
             fprintfn "pop rbx ; Return address"
@@ -1086,12 +1118,12 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             fprintfn "ret"
         | false ->
             fprintfn ";;; Copy result expression from stack to pointer from implicit first argument"
-            fprintfn $"push %d{funcReturnSize}"
+            fprintfn $"push %d{argumentsInfo.ResultSize}"
             fprintfn "mov rax, qword [rbp+16]"
             fprintfn "push rax"
             fprintfn "push rsp"
             fprintfn "memcopy"
-            fprintfn $"add rsp, %d{align funcReturnSize 8}"
+            fprintfn $"add rsp, %d{align argumentsInfo.ResultSize 8}"
             fprintfn "leave"
             fprintfn "pop rax; Return address"
             fprintfn $"add rsp, %d{argsSizesAligned} ; Remove incoming arguments"
@@ -1104,7 +1136,11 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
     let writeExportWrapperMicrosoftX64 (func: Function) : TypeCheckerM.M<SourceContext, unit> = tchecker {
         let! source = getFromContext (fun c -> c.CurrentSource)
-        let! argsSizes = func.Args |> List.map snd |> List.map (fun t -> getTypeIdSize { TypeId = t; Source = source }) |> unwrapList
+        let! argsSizes =
+            func.Args
+            |> List.map snd
+            |> List.map (fun t -> getTypeIdSize { TypeId = t; Source = source })
+            |> unwrapList
 
         let copyRegArg reg (offset: int<albytesize>) (argSize: int<bytesize>) = (fun () ->
             match int argSize with
@@ -1189,8 +1225,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
         let (memoryToAllocate: int<albytesize>), argsToStackCopy =
             arguments |> List.fold copyArgsFromMsX64ToStack (0<albytesize>, (fun () -> ()))
-        let memoryToAllocate : int<albytesize> = if firstArgIsResultPtr then memoryToAllocate + 8<albytesize> else memoryToAllocate
-        let memoryToAllocate : int<albytesize> = if not (1<bytesize> <= funcReturnSize && funcReturnSize <= 8<bytesize>) then memoryToAllocate + (align funcReturnSize 8) else memoryToAllocate
+        let memoryToAllocate = memoryToAllocate + 8<albytesize> + (align funcReturnSize 8)
 
         fprintfn $";;; Export wrapper for '%s{func.Name}' function"
         fprintfn "%%push"
@@ -1246,6 +1281,134 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         fprintfn $";;; End of export wrapper for '%s{func.Name}' function"
     }
 
+    let writeExternWrapperMicrosoftX64 (func: Function) : TypeCheckerM.M<SourceContext, unit> = tchecker {
+        let! source = getFromContext (fun c -> c.CurrentSource)
+        let! argumentsInfo = getFuncCallInfo func
+        let rcxOffset = -8<albytesize>
+        let rdxOffset = -16<albytesize>
+        let r8Offset = -24<albytesize>
+        let r9Offset = -32<albytesize>
+        let returnPtrOffset = (-(align argumentsInfo.ResultSize 8)) - 32<albytesize>
+
+        let copyArgumentToRegister (regOffset: int<albytesize>) (arg: IncomingArgInfo) =
+            match int arg.Size with
+            | 0 -> failwithf $"Argument can't have size 0: %A{arg}"
+            | 1 | 2 | 4 | 8 -> (fun () ->
+                fprintfn $"mov rax, qword [rbp%+d{arg.Offset}"
+                fprintfn $"mov qword [rbp%+d{regOffset}], rax")
+            | _ -> (fun () ->
+                    fprintfn $"lea, rax qword [rbp%+d{arg.Offset}]"
+                    fprintfn $"mov qword [rbp%+d{regOffset}], rax")
+
+        let copyArgumentToStack (stackOffset: int<albytesize>) (arg:IncomingArgInfo) =
+            match int arg.Size with
+            | 0 -> failwithf $"Argument can't have size 0: %A{arg}"
+            | 1 | 2 | 4 | 8 -> (stackOffset + (align arg.Size 8), (fun () ->
+                fprintfn $"mov rax, qword [rbp%+d{arg.Offset}"
+                fprintfn $"mov qword [rsp%+d{stackOffset}], rax"))
+            | _ -> (stackOffset + 8<albytesize>, (fun () ->
+                fprintfn $"lea rax, qword [rbp%+d{arg.Offset}]"
+                fprintfn $"mov qword [rsp%+d{stackOffset}], rax"))
+
+        let mapNativeArgumentIndexToExternIndex (stackOffset: int<albytesize>) (arg: IncomingArgInfo) =
+                match arg.Index with
+                | 0 when TypeId.isFloat arg.Type.TypeId -> (stackOffset, (fun () -> fprintfn $"movsd xmm0, qword [rbp%+d{arg.Offset}]"))
+                | 0 -> (stackOffset, copyArgumentToRegister rcxOffset arg)
+                | 1 when TypeId.isFloat arg.Type.TypeId -> (stackOffset, (fun () -> fprintfn $"movsd xmm1, qword [rbp%+d{arg.Offset}]"))
+                | 1 -> (stackOffset, copyArgumentToRegister rdxOffset arg)
+                | 2 when TypeId.isFloat arg.Type.TypeId -> (stackOffset, (fun () -> fprintfn $"movsd xmm2, qword [rbp%+d{arg.Offset}]"))
+                | 2 -> (stackOffset, copyArgumentToRegister r8Offset arg)
+                | 3 when TypeId.isFloat arg.Type.TypeId -> (stackOffset, (fun () -> fprintfn $"movsd xmm3, qword [rbp%+d{arg.Offset}]"))
+                | 3 -> (stackOffset, copyArgumentToRegister r9Offset arg)
+                | _ -> copyArgumentToStack stackOffset arg
+
+        let isImplicitReturnPtrRequired = not (TypeId.isVoid func.ReturnType) && not argumentsInfo.IsResultSizeFitsReg
+        let arguments = if isImplicitReturnPtrRequired
+                        then argumentsInfo.Args |> List.map (fun a -> { a with Index = a.Index + 1 })
+                        else argumentsInfo.Args
+
+        let offset, argumentWriter =
+            arguments
+            |> List.fold (fun (offset, writer) arg ->
+                let newOffset, newWriter = mapNativeArgumentIndexToExternIndex offset arg
+                (newOffset, writer >> newWriter)) (0<albytesize>, (fun () -> ()))
+        let memoryToAllocate = offset + 32<albytesize> + (align argumentsInfo.ResultSize 8)
+
+        let label = getLabel' func.Name source
+        fprintfn $";;; Extern wrapper for func '%s{func.Name}'"
+        fprintfn "%%push"
+        fprintfn $"extern %s{func.Name}"
+        fprintfn $"static %s{label}"
+        fprintfn $"%s{label}:"
+        fprintfn $"enter %d{memoryToAllocate}, 0"
+        fprintfn "mov rax, 0"
+        fprintfn $"mov qword [rbp%+d{rcxOffset}], rax"
+        fprintfn $"mov qword [rbp%+d{rcxOffset}], rax"
+        fprintfn $"mov qword [rbp%+d{r8Offset}], rax"
+        fprintfn $"mov qword [rbp%+d{r9Offset}], rax"
+        argumentWriter ()
+
+        if isImplicitReturnPtrRequired then
+            fprintfn $"lea rax, qword [rbp%+d{returnPtrOffset}]"
+            fprintfn $"mov qword [rbp%+d{rcxOffset}], rax"
+
+        fprintfn $"mov rcx, qword [rbp%+d{rcxOffset}]"
+        fprintfn $"mov rdx, qword [rbp%+d{rdxOffset}]"
+        fprintfn $"mov r8, qword [rbp%+d{r8Offset}]"
+        fprintfn $"mov r9, qword [rbp%+d{r9Offset}]"
+        fprintfn "sub rsp, 32"
+        fprintfn $"call %s{func.Name}"
+        fprintfn "add rsp, 32"
+
+        let argumentsSum = arguments |> List.sumBy (fun s -> align s.Size 8)
+        let argumentsSum = argumentsSum + if argumentsInfo.IsFirstArgumentResultPtr then 8<albytesize> else 0<albytesize>
+
+        match int argumentsInfo.ResultSize with
+        | 0 ->
+            fprintfn "leave"
+            fprintfn "pop rax"
+            fprintfn $"add rsp, %d{argumentsSum}"
+            fprintfn "push rax"
+            fprintfn "ret"
+        | _ when TypeId.isFloat func.ReturnType ->
+            fprintfn "sub rsp, 8"
+            fprintfn "movsd qword [rsp], xmm0"
+            fprintfn "mov rax, qword [rsp]"
+            fprintfn "add rsp, 8"
+            fprintfn "leave"
+            fprintfn "pop rbx"
+            fprintfn $"add rsp, %d{argumentsSum}"
+            fprintfn "push rbx"
+            fprintfn "ret"
+        | 1 | 2 | 4 | 8 ->
+            fprintfn "leave"
+            fprintfn "pop rbx"
+            fprintfn $"add rsp, %d{argumentsSum}"
+            fprintfn "push rbx"
+            fprintfn "ret"
+        | _ when argumentsInfo.IsResultSizeFitsReg ->
+            fprintfn $"mov rax, qword [rbp%+d{returnPtrOffset}]"
+            fprintfn "leave"
+            fprintfn "pop rbx"
+            fprintfn $"add rsp, %d{argumentsSum}"
+            fprintfn "push rbx"
+            fprintfn "ret"
+        | size ->
+            fprintfn $"push %d{size}"
+            fprintfn "mov rax, qword [rbp+16]"
+            fprintfn "push rax"
+            fprintfn $"lea rax, qword [rbp%+d{returnPtrOffset}]"
+            fprintfn "push rax"
+            fprintfn "memcopy"
+            fprintfn "leave"
+            fprintfn "pop rax"
+            fprintfn $"add rsp, %d{argumentsSum}"
+            fprintfn "push rax"
+            fprintfn "ret"
+        fprintfn "%%pop"
+        fprintfn $";;; End of extern wrapper for func '%s{func.Name}'"
+    }
+
     let writeFunction (func: Function) : TypeCheckerM.M<SourceContext, unit> = tchecker {
         match func.Modifier with
         | None -> do! writeNativeFunction func
@@ -1255,7 +1418,9 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             | CallingConvention.MicrosoftX64 -> do! writeExportWrapperMicrosoftX64 func
             | CallingConvention.SysVX64 -> failwith "Calling convention 'System V ABI x64' to be implemented'"
         | Some Modifier.Extern ->
-            failwith "Extern functions to be implemented."
+            match callconv with
+            | CallingConvention.MicrosoftX64 -> do! writeExternWrapperMicrosoftX64 func
+            | CallingConvention.SysVX64 -> failwith "Calling convention 'System V ABI x64' to be implemented."
     }
 
     let writeMacros () =
