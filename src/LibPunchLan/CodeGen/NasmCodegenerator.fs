@@ -130,6 +130,17 @@ let number2nasm (number: Number) =
         sprintf $"(%f{dbl})"
     | Number.Negative _ -> failwith "Negative number should have been removed at this point."
 
+let string2nasm (str: string) =
+    let bytes = Encoding.UTF8.GetBytes str
+    let hex =
+        bytes
+        |> Seq.ofArray
+        |> Seq.map (fun b -> sprintf $"0%x{b}h")
+    let hex = Seq.append hex (Seq.init 8 (fun _ -> "00h"))
+    String.concat ", " hex
+
+
+
 let getField (typ: TypeDeclRef) (name: string) : TypeCheckerM.M<NasmContext, FieldInfo> = tchecker {
     let folder prev (fieldName, fieldType) : unit -> TypeCheckerM.M<NasmContext, int * FieldInfo list> = (fun () -> tchecker {
         let! offset, xs = prev ()
@@ -1294,7 +1305,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             match int arg.Size with
             | 0 -> failwithf $"Argument can't have size 0: %A{arg}"
             | 1 | 2 | 4 | 8 -> (fun () ->
-                fprintfn $"mov rax, qword [rbp%+d{arg.Offset}"
+                fprintfn $"mov rax, qword [rbp%+d{arg.Offset}]"
                 fprintfn $"mov qword [rbp%+d{regOffset}], rax")
             | _ -> (fun () ->
                     fprintfn $"lea, rax qword [rbp%+d{arg.Offset}]"
@@ -1304,7 +1315,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             match int arg.Size with
             | 0 -> failwithf $"Argument can't have size 0: %A{arg}"
             | 1 | 2 | 4 | 8 -> (stackOffset + (align arg.Size 8), (fun () ->
-                fprintfn $"mov rax, qword [rbp%+d{arg.Offset}"
+                fprintfn $"mov rax, qword [rbp%+d{arg.Offset}]"
                 fprintfn $"mov qword [rsp%+d{stackOffset}], rax"))
             | _ -> (stackOffset + 8<albytesize>, (fun () ->
                 fprintfn $"lea rax, qword [rbp%+d{arg.Offset}]"
@@ -1423,6 +1434,93 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             | CallingConvention.SysVX64 -> failwith "Calling convention 'System V ABI x64' to be implemented."
     }
 
+    let rec writeVariableExpression (expression: Expression) : TypeCheckerM.M<SourceContext, unit> = tchecker {
+        match expression with
+        | Expression.Constant (Value.String string) ->
+            let strLabel = getStringLabel string
+            fprintfn $"%s{strLabel}"
+        | Expression.Constant (Value.Number number) -> fprintfn $"%s{number2nasm number}"
+        | Expression.Constant (Value.Boolean value) ->
+            match value with
+            | true -> fprintfn $"%s{nasmTrueConst}"
+            | false -> fprintfn $"%s{nasmFalseConst}"
+        | Expression.Constant (Value.Char char) -> fprintfn $"0%x{int char}h"
+        | Expression.StructCreation (typename, fields) when fields |> List.map snd |> List.forall isExpressionConstant ->
+            let! typDecl = locateTypeDecl typename
+            fprintfn $";;; %A{typDecl.TypeDecl.TypeType} named '%O{typDecl}' goes from here"
+            match typDecl.TypeDecl.TypeType with
+            | TypeType.Struct ->
+                for fieldName, fieldType in typDecl.TypeDecl.Fields do
+                    let! size = getTypeIdSize { TypeId = fieldType; Source = typDecl.Source }
+                    match MList.tryLookup fieldName fields with
+                    | Some initExpression ->
+                        do! writeVariableExpression initExpression
+                        fprintfn $"align %d{align size 8},db 0"
+                    | None ->
+                        fprintfn $"times %d{align size 8} db 0"
+            | TypeType.Union ->
+                let! source = getFromContext (fun c -> c.CurrentSource)
+                let! size = getTypeIdSize { TypeId = TypeId.Named typename; Source = source }
+                match fields with
+                | [] -> fprintfn $"times %d{align size 8} db 0"
+                | [ (_, field) ] ->
+                    do! writeVariableExpression field
+                    fprintfn $"align %d{align size 8},db 0"
+                | _ -> yield! fatalDiag $"Union initializer typ '%O{typDecl}' must consist of exactly 1 field initializer."
+        | expression ->
+            let unionCase, _ = FSharpValue.GetUnionFields (expression, expression.GetType ())
+            yield! fatalDiag $"Expression '%s{unionCase.Name}' can't be used for global variables intializers."
+    }
+
+    let writeVariable (var: Variable) aligner res: TypeCheckerM.M<SourceContext, unit> = tchecker {
+        let! source = getFromContext (fun c -> c.CurrentSource)
+        let label = getLabel var.Name source var.Modifier
+        let! size = getTypeIdSize { TypeId = var.TypeId; Source = source }
+
+        match var.Modifier with
+        | None -> fprintf "static "
+        | Some Modifier.Extern -> fprintf "extern "
+        | Some Modifier.Export -> fprintf "global "
+        fprintfn $"%s{label}"
+        fprintfn $"%s{label}:"
+        match var.InitExpr with
+        | Some expression -> do! writeVariableExpression expression
+        | None -> fprintfn $"%s{res (align size 8)}"
+
+        fprintfn $"%s{aligner 16}"
+    }
+
+    let writeGlobalVariables () : TypeCheckerM.M<SourceContext, unit> = tchecker {
+        let! source = getFromContext (fun c -> c.CurrentSource)
+        let variables = source |> getVariableDeclarations
+        let readonlyVars = variables |> List.filter (fun v -> TypeId.isConst v.TypeId)
+        let writableVars = variables |> List.filter (fun v -> (not (TypeId.isConst v.TypeId)) && Option.isSome v.InitExpr)
+        let bssVars = variables |> List.filter (fun v -> (not (TypeId.isConst v.TypeId)) && Option.isNone v.InitExpr)
+
+        assert ((List.length readonlyVars + List.length writableVars + List.length bssVars) = List.length variables)
+
+        if not (List.isEmpty variables) then
+            fprintfn $";;; Variables (%d{List.length variables})"
+
+        if not (List.isEmpty readonlyVars) then
+            fprintfn $";;; Read only variables (%d{List.length readonlyVars})"
+            fprintfn "section .rodata align=16"
+            for variable in readonlyVars do
+                do! writeVariable variable (fun b -> sprintf $"align %d{b},db 0") (fun b -> sprintf $"times %d{b} db 0")
+
+        if not (List.isEmpty writableVars) then
+            fprintfn $";;; Writable variables (%d{List.length writableVars})"
+            fprintfn "section .data align=16"
+            for variable in writableVars do
+                do! writeVariable variable (fun b -> sprintf $"align %d{b},db 0") (fun b -> sprintf $"times %d{b} db 0")
+
+        if not (List.isEmpty bssVars) then
+            fprintfn $";;; bss (Unitialized) varaibles (%d{List.length bssVars})"
+            fprintfn "section .bss align=16"
+            for variable in bssVars do
+                do! writeVariable variable (fun b -> sprintf $"align %d{b},resb 0") (fun b -> sprintf $"times %d{b} resb 0")
+    }
+
     let writeMacros () =
         fprintfn "%%macro memcopy 0"
         fprintfn "    mov rsi, 0"
@@ -1446,17 +1544,41 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
         member _.Write() =
             fprintfn "bits 64"
+            fprintfn "default rel"
             writeMacros ()
 
             for source in program.Sources do
                 fprintfn $";;; Source '%s{source.Filename}'"
-                fprintfn "section .text align=16"
 
                 match makeContext source program with
                 | Ok context ->
-                    for func in context.CurrentSource |> getFunctionDeclarations do
-                        runm (writeFunction func) context
+                    let functions = context.CurrentSource |> getFunctionDeclarations
+                    if not (List.isEmpty functions) then
+                        fprintfn $";;; Functions (%d{List.length functions})"
+                        fprintfn "section .text align=16"
+                        for func in functions do
+                            runm (writeFunction func) context
+
+                    runm (writeGlobalVariables ()) context
                 | Error diags ->
                     failwithf $"Error creating type checker context:\n%s{diags2Str diags}"
 
                 fprintfn $";;; End of source '%s{source.Filename}'"
+
+            let strings =
+                program.Sources
+                |> Seq.ofList
+                |> Seq.collect getStringsFromSource
+                |> Seq.map (fun str -> (getStringLabel str, str))
+                |> Seq.distinctBy fst
+                |> Seq.sortBy (fun (_, str) -> String.length str)
+                |> List.ofSeq
+
+            if not (List.isEmpty strings) then
+                fprintfn $";;; Now all strings gathered from sources (%d{List.length strings}) go here"
+                fprintfn "section .rodata align=16"
+                for label, str in strings do
+                    fprintfn $"static %s{label}"
+                    fprintfn $"%s{label}:"
+                    fprintfn $"db %s{string2nasm str}"
+                    fprintfn "align 16,db 0"

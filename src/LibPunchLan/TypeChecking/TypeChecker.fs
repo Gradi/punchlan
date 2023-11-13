@@ -251,7 +251,7 @@ let rec checkFunctionStatement (statement: Statement) : TypeCheckerM.M<SourceFun
         let! leftType = checkWithContext sourceContext (getExpressionType left)
         let! rightType = checkWithContext sourceContext (getExpressionType right)
         if not (TypeId.isTypesEqual leftType rightType) then yield! diag' $"Left(target) expression of assignment has type \"%O{leftType}\", but right part has \"%O{rightType}\""
-        if TypeId.isConstType leftType.TypeId then yield! diag' $"You can't assign to a constant variable (\"%O{leftType}\")"
+        if TypeId.isConst leftType.TypeId then yield! diag' $"You can't assign to a constant variable (\"%O{leftType}\")"
         match left with
         | Variable _
         | MemberAccess _

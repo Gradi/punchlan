@@ -19,7 +19,7 @@ let rec unwrapConst (typ: TypeId) =
     | Const typ -> unwrapConst typ
     | typ -> typ
 
-let isConstType (typ: TypeId) =
+let isConst (typ: TypeId) =
     match typ with
     | Const _ -> true
     | _ -> false

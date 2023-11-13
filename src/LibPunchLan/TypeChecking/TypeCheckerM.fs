@@ -193,3 +193,88 @@ let unwrapList (list: M<'a, 'b> list) : M<'a,  'b list> = (fun context ->
 let diags2Str (diags: Diagnostics) =
     let diags = diags |> List.map (fun d -> d.ToString ())
     String.concat "\n\t" diags
+
+let rec getStringsFromExpression (expression: Expression) : string seq = seq {
+    match expression with
+    | Constant (Value.String str) -> yield str
+    | FuncCall (_, exprs) -> yield! exprs |> Seq.collect getStringsFromExpression
+    | MemberAccess (left, _) -> yield! getStringsFromExpression left
+    | BinaryExpression { Left = left; Right = right } ->
+        yield! getStringsFromExpression left
+        yield! getStringsFromExpression right
+    | ArrayAccess (left, right) ->
+        yield! getStringsFromExpression left
+        yield! getStringsFromExpression right
+    | StructCreation (_, fields) ->
+        yield!
+            fields
+            |> Seq.ofList
+            |> Seq.map snd
+            |> Seq.collect getStringsFromExpression
+    | Bininversion expr -> yield! getStringsFromExpression expr
+    | _ -> ()
+}
+
+let rec getExpressionsFromStatement (statement: Statement) : Expression seq = seq {
+    match statement with
+    | Statement.VarDecl (_, _, Some expr) -> yield expr
+    | Statement.VarDecl _ -> ()
+    | Statement.VarAssignment (left, right) ->
+        yield left
+        yield right
+    | Statement.If (main, elseIfs, elses) ->
+        yield main.Condition
+        yield!
+            main.Body
+            |> Seq.collect getExpressionsFromStatement
+        yield!
+            elseIfs
+            |> Seq.map (fun f -> f.Condition)
+        yield!
+            elseIfs
+            |> Seq.collect (fun f -> f.Body)
+            |> Seq.collect getExpressionsFromStatement
+        yield!
+            elses
+            |> Seq.collect getExpressionsFromStatement
+    | Statement.For (_, start, enD, step, body) ->
+        yield start
+        yield enD
+        match step with
+        | Some expr -> yield expr
+        | None -> ()
+
+        yield!
+            body
+            |> Seq.collect getExpressionsFromStatement
+    | Statement.While (condition, body) ->
+        yield condition
+        yield!
+            body
+            |> Seq.collect getExpressionsFromStatement
+    | Statement.Defer body ->
+        yield!
+            body
+            |> Seq.collect getExpressionsFromStatement
+    | Statement.Return -> ()
+    | Statement.ReturnExpr expr -> yield expr
+    | Statement.Expression expr -> yield expr
+}
+
+let getStringsFromSource (source: Source) : string seq = seq {
+    yield!
+        source
+        |> getVariableDeclarations
+        |> Seq.ofList
+        |> Seq.map (fun v -> v.InitExpr)
+        |> Seq.choose id
+        |> Seq.collect getStringsFromExpression
+
+    yield!
+        source
+        |> getFunctionDeclarations
+        |> Seq.ofList
+        |> Seq.collect (fun f -> f.Body)
+        |> Seq.collect getExpressionsFromStatement
+        |> Seq.collect getStringsFromExpression
+}
