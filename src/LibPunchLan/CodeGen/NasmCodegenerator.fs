@@ -375,7 +375,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         | Expression.MemberAccess (Expression.Variable alias, name) when getAliasedSource alias ssourceContext |> Result.isOk ->
             let! varDecl = sourceContext (locateVariableDecl { Name = name; Alias = Some alias })
             let label = getLabel varDecl.Variable.Name varDecl.Source varDecl.Variable.Modifier
-            do! bprintfn $"lea rax, qword [%s{label}]"
+            do! bprintfn $"mov rax, qword %s{label}"
             do! bprintfn "push rax"
             do! writeCopyToStack { TypeId = varDecl.Variable.TypeId; Source = varDecl.Source }
 
@@ -855,7 +855,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             | None ->
                 let! varDecl = sourceContext (locateVariableDecl { Name = name; Alias = None })
                 let label = getLabel varDecl.Variable.Name varDecl.Source varDecl.Variable.Modifier
-                do! bprintfn $"mov rax, %s{label}"
+                do! bprintfn $"mov rax, qword %s{label}"
                 do! bprintfn "push rax"
 
         | Expression.MemberAccess (Expression.Variable varname as variable, memberName)
@@ -875,7 +875,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             when getAliasedSource alias ssourceContext |> Result.isOk ->
             let! varDecl = sourceContext (locateVariableDecl { Name = name; Alias = Some alias })
             let label = getLabel varDecl.Variable.Name varDecl.Source varDecl.Variable.Modifier
-            do! bprintfn $"mov rax, %s{label}"
+            do! bprintfn $"mov rax, qword %s{label}"
             do! bprintfn "push rax"
 
         | Expression.MemberAccess (left, memberName) ->
