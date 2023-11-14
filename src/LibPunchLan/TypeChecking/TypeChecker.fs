@@ -372,6 +372,10 @@ let checkFunctionDeclaration (func: Function) : TypeCheckerM.M<SourceContext, un
 
     do! checkNamedTypeIdExists func.ReturnType
 
+    if Option.exists (fun m -> m = Modifier.Extern) func.Modifier &&
+       not (List.isEmpty func.Body) then
+           yield! diag $"Function \"%s{func.Name}\" is extern function and have a body."
+
     let! source = getFromContext (fun c -> c.CurrentSource)
     let! context = getFromContext (fun c -> c.WithFunction func)
     let env = lazy (

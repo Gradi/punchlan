@@ -1,0 +1,5 @@
+﻿#FAIL Function "function" is extern function and have a body
+
+extern func function()
+    var variable: int32 = 123
+endfunc
