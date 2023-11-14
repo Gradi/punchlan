@@ -14,6 +14,10 @@ let checkOpenDirectives () : TypeCheckerM.M<SourceContext, unit> = tchecker {
 
     if not (List.isEmpty paths) then yield! diag $"Source contains duplicated open paths: %A{paths}"
     if not (List.isEmpty aliases) then yield! diag $"Source contains duplicated open aliases: %A{aliases}"
+
+    let! sourceFilename = getFromContext (fun c -> c.CurrentSource.Filename)
+    if odis |> List.exists (fun od -> od.Path = sourceFilename) then
+        yield! diag "Source can't 'open' itself."
 }
 
 let checkUniqueDeclarations () : TypeCheckerM.M<SourceContext, unit> = tchecker {
