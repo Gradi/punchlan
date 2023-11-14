@@ -1436,17 +1436,33 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             | CallingConvention.SysVX64 -> failwith "Calling convention 'System V ABI x64' to be implemented."
     }
 
-    let rec writeVariableExpression (expression: Expression) : TypeCheckerM.M<SourceContext, unit> = tchecker {
+    let rec writeVariableExpression (expression: Expression) (size: int<bytesize>) : TypeCheckerM.M<SourceContext, unit> = tchecker {
+        let writePrefix () =
+            match int size with
+            | 1 -> fprintf "db "
+            | 2 -> fprintf "dw "
+            | 4 -> fprintf "dd "
+            | 8 -> fprintf "dq "
+            | size -> failwithf $"Size %d{size} should not happen."
+
         match expression with
         | Expression.Constant (Value.String string) ->
             let strLabel = getStringLabel string
             fprintfn $"dq %s{strLabel}"
-        | Expression.Constant (Value.Number number) -> fprintfn $"%s{number2nasm number}"
+
+        | Expression.Constant (Value.Number number) ->
+            writePrefix ()
+            fprintfn $"%s{number2nasm number}"
+
         | Expression.Constant (Value.Boolean value) ->
             match value with
-            | true -> fprintfn $"%s{nasmTrueConst}"
-            | false -> fprintfn $"%s{nasmFalseConst}"
-        | Expression.Constant (Value.Char char) -> fprintfn $"0%x{int char}h"
+            | true -> fprintfn $"dq %s{nasmTrueConst}"
+            | false -> fprintfn $"dq %s{nasmFalseConst}"
+
+        | Expression.Constant (Value.Char char) ->
+            writePrefix ()
+            fprintfn $"0%x{int char}h"
+
         | Expression.StructCreation (typename, fields) when fields |> List.map snd |> List.forall isExpressionConstant ->
             let! typDecl = locateTypeDecl typename
             fprintfn $";;; %A{typDecl.TypeDecl.TypeType} named '%O{typDecl}' goes from here"
@@ -1454,22 +1470,30 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             | TypeType.Struct ->
                 for fieldName, fieldType in typDecl.TypeDecl.Fields do
                     let! size = getTypeIdSize { TypeId = fieldType; Source = typDecl.Source }
+                    fprintfn $"; Field '%s{fieldName}'"
                     match MList.tryLookup fieldName fields with
                     | Some initExpression ->
-                        do! writeVariableExpression initExpression
+                        do! writeVariableExpression initExpression size
                         fprintfn $"align %d{align size 8},db 0"
                     | None ->
                         fprintfn $"times %d{align size 8} db 0"
+
             | TypeType.Union ->
                 let! source = getFromContext (fun c -> c.CurrentSource)
                 let! size = getTypeIdSize { TypeId = TypeId.Named typename; Source = source }
                 match fields with
                 | [] -> fprintfn $"times %d{align size 8} db 0"
-                | [ (_, field) ] ->
-                    do! writeVariableExpression field
-                    fprintfn $"align %d{align size 8},db 0"
+                | [ (fieldName, fieldExpr) ] ->
+                    match MList.tryLookup fieldName typDecl.TypeDecl.Fields with
+                    | Some fieldType ->
+                        let! size = getTypeIdSize { TypeId = fieldType; Source = typDecl.Source }
+                        do! writeVariableExpression fieldExpr size
+                        fprintfn $"align %d{align size 8},db 0"
+                    | None -> failwithf $"Can't find field '%s{fieldName}' in '%O{typDecl}'"
                 | _ -> yield! fatalDiag $"Union initializer typ '%O{typDecl}' must consist of exactly 1 field initializer."
+
             fprintfn $";;; End of %A{typDecl.TypeDecl.TypeType} named '%O{typDecl}' goes from here"
+
         | expression ->
             let unionCase, _ = FSharpValue.GetUnionFields (expression, expression.GetType ())
             yield! fatalDiag $"Expression '%s{unionCase.Name}' can't be used for global variables intializers."
@@ -1487,7 +1511,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         fprintfn $"%s{label}"
         fprintfn $"%s{label}:"
         match var.InitExpr with
-        | Some expression -> do! writeVariableExpression expression
+        | Some expression -> do! writeVariableExpression expression size
         | None -> fprintfn $"%s{res (align size 8)}"
 
         fprintfn $"%s{aligner 16}"
