@@ -1,0 +1,11 @@
+﻿#FAIL 'defer' statement can't have 'defer' statements
+
+func function()
+    defer
+        while true do
+            defer
+                var l: int32 = 0
+            enddefer
+        endwhile
+    enddefer
+endfunc

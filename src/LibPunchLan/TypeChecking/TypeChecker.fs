@@ -308,9 +308,12 @@ let rec checkFunctionStatement (statement: Statement) : TypeCheckerM.M<SourceFun
 
     | Statement.Defer body ->
         do! checkStatementList body
-        let allStatements = body |> Seq.collect flattenStatement
+        let allStatements = body |> Seq.collect flattenStatement |> Seq.cache
         if allStatements |> Seq.exists (fun s -> match s with | Statement.Return | Statement.ReturnExpr _ -> true | _ -> false) then
-            yield! diag' $"'defer' statement can't have 'return' statements."
+            yield! diag' "'defer' statement can't have 'return' statements."
+
+        if allStatements |> Seq.exists (fun s -> match s with | Statement.Defer _ -> true | _ -> false) then
+            yield! diag' "'defer' statement can't have 'defer' statements."
 
     | Statement.Return ->
         let! func = getFromContext (fun c -> c.CurrentFunction)
