@@ -1142,7 +1142,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             fprintfn "push rax"
             fprintfn "ret"
 
-        fprintfn "%%pop"
+        fprintfn "%%pop\n\n"
     }
 
     let writeExportWrapperMicrosoftX64 (func: Function) : TypeCheckerM.M<SourceContext, unit> = tchecker {
@@ -1289,7 +1289,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             fprintfn "leave"
             fprintfn "ret"
         fprintfn "%%pop"
-        fprintfn $";;; End of export wrapper for '%s{func.Name}' function"
+        fprintfn $";;; End of export wrapper for '%s{func.Name}' function\n\n"
     }
 
     let writeExternWrapperMicrosoftX64 (func: Function) : TypeCheckerM.M<SourceContext, unit> = tchecker {
@@ -1417,7 +1417,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             fprintfn "push rax"
             fprintfn "ret"
         fprintfn "%%pop"
-        fprintfn $";;; End of extern wrapper for func '%s{func.Name}'"
+        fprintfn $";;; End of extern wrapper for func '%s{func.Name}'\n\n"
     }
 
     let writeFunction (func: Function) : TypeCheckerM.M<SourceContext, unit> = tchecker {
@@ -1426,11 +1426,13 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         | Some Modifier.Export ->
             do! writeNativeFunction func
             match callconv with
-            | CallingConvention.MicrosoftX64 -> do! writeExportWrapperMicrosoftX64 func
+            | CallingConvention.MicrosoftX64 ->
+                do! writeExportWrapperMicrosoftX64 func
             | CallingConvention.SysVX64 -> failwith "Calling convention 'System V ABI x64' to be implemented'"
         | Some Modifier.Extern ->
             match callconv with
-            | CallingConvention.MicrosoftX64 -> do! writeExternWrapperMicrosoftX64 func
+            | CallingConvention.MicrosoftX64 ->
+                do! writeExternWrapperMicrosoftX64 func
             | CallingConvention.SysVX64 -> failwith "Calling convention 'System V ABI x64' to be implemented."
     }
 
@@ -1501,25 +1503,28 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         assert ((List.length readonlyVars + List.length writableVars + List.length bssVars) = List.length variables)
 
         if not (List.isEmpty variables) then
-            fprintfn $";;; Variables (%d{List.length variables})"
+            fprintfn $";;; Variables (%d{List.length variables})\n"
 
         if not (List.isEmpty readonlyVars) then
             fprintfn $";;; Read only variables (%d{List.length readonlyVars})"
             fprintfn "section .rodata align=16"
             for variable in readonlyVars do
                 do! writeVariable variable (fun b -> sprintf $"align %d{b},db 0") (fun b -> sprintf $"times %d{b} db 0")
+                fprintf "\n"
 
         if not (List.isEmpty writableVars) then
             fprintfn $";;; Writable variables (%d{List.length writableVars})"
             fprintfn "section .data align=16"
             for variable in writableVars do
                 do! writeVariable variable (fun b -> sprintf $"align %d{b},db 0") (fun b -> sprintf $"times %d{b} db 0")
+                fprintf "\n"
 
         if not (List.isEmpty bssVars) then
             fprintfn $";;; bss (Unitialized) varaibles (%d{List.length bssVars})"
             fprintfn "section .bss align=16"
             for variable in bssVars do
                 do! writeVariable variable (fun b -> sprintf $"align %d{b},resb 0") (fun b -> sprintf $"times %d{b} resb 0")
+                fprintf "\n"
     }
 
     let writeMacros () =
@@ -1532,6 +1537,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         fprintfn "    pop rcx"
         fprintfn "    rep movsb"
         fprintfn "%%endmacro"
+        fprintf "\n"
 
     let runm (m: TypeCheckerM.M<SourceContext, unit>) (ctx: SourceContext) =
         match m ctx with
@@ -1544,11 +1550,11 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
     interface ICodegenerator with
 
         member _.Write() =
-            fprintfn "bits 64"
+            fprintfn "bits 64\n"
             writeMacros ()
 
             for source in program.Sources do
-                fprintfn $";;; Source '%s{source.Filename}'"
+                fprintfn $";;; Source '%s{source.Filename}'\n"
 
                 match makeContext source program with
                 | Ok context ->
@@ -1563,7 +1569,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                 | Error diags ->
                     failwithf $"Error creating type checker context:\n%s{diags2Str diags}"
 
-                fprintfn $";;; End of source '%s{source.Filename}'"
+                fprintfn $";;; End of source '%s{source.Filename}'\n"
 
             let strings =
                 program.Sources
@@ -1576,9 +1582,9 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
             if not (List.isEmpty strings) then
                 fprintfn $";;; Now all strings gathered from sources (%d{List.length strings}) go here"
-                fprintfn "section .rodata align=16"
+                fprintfn "section .rodata align=16\n"
                 for label, str in strings do
                     fprintfn $"static %s{label}"
                     fprintfn $"%s{label}:"
                     fprintfn $"db %s{string2nasm str}"
-                    fprintfn "align 16,db 0"
+                    fprintfn "align 16,db 0\n\n"
