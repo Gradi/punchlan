@@ -311,3 +311,27 @@ let rec flattenStatement (statement: Statement) : Statement seq = seq {
     | Statement.ReturnExpr _
     | Statement.Expression _ -> ()
 }
+
+let rec statementChainContainsReturnExpr (statements: Statement seq) =
+    let folder result statement =
+        match result with
+        | true -> true
+        | false ->
+            match statement with
+            | Statement.VarDecl _
+            | Statement.VarAssignment _
+            | Statement.Defer _
+            | Statement.Return
+            | Statement.Expression _ -> false
+
+            | Statement.ReturnExpr _ -> true
+
+            | Statement.If (main, elseIfs, elses) ->
+                statementChainContainsReturnExpr main.Body &&
+                elseIfs |> Seq.forall (fun e -> statementChainContainsReturnExpr e.Body) &&
+                statementChainContainsReturnExpr elses
+            | Statement.For (_, _, _, _, body)
+            | Statement.While (_, body) -> statementChainContainsReturnExpr body
+
+    statements
+    |> Seq.fold folder false

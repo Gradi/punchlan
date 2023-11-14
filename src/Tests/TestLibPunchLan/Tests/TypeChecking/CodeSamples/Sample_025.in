@@ -1,0 +1,8 @@
+﻿#FAIL Function "sum" with return type "int32" doesn't have return \<expr\> statement.
+
+func sum(from: int64, to: int64) : int32
+    var result: int64 = 0
+    for i in from..to do
+        result = result + i
+    endfor
+endfunc

@@ -382,6 +382,10 @@ let checkFunctionDeclaration (func: Function) : TypeCheckerM.M<SourceContext, un
        not (List.isEmpty func.Body) then
            yield! diag $"Function \"%s{func.Name}\" is extern function and have a body."
 
+    if not (TypeId.isVoid func.ReturnType) &&
+       not (statementChainContainsReturnExpr func.Body) then
+           yield! diag $"Function \"%s{func.Name}\" with return type \"%O{func.ReturnType}\" doesn't have return <expr> statement."
+
     let! source = getFromContext (fun c -> c.CurrentSource)
     let! context = getFromContext (fun c -> c.WithFunction func)
     let env = lazy (
