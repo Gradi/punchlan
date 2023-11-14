@@ -1,0 +1,3 @@
+﻿#FAIL Variable "variable" is extern and has init expression. 
+
+extern var variable: int64 = 123

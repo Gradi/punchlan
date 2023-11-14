@@ -348,6 +348,10 @@ let checkVariableDeclaration (variable: Variable) : TypeCheckerM.M<SourceContext
     if TypeId.isVoid variable.TypeId then
         yield! diag $"Variable \"%s{variable.Name}\" can't have void type."
 
+    if Option.exists (fun m -> m = Modifier.Extern) variable.Modifier &&
+       Option.isSome variable.InitExpr then
+           yield! diag $"Variable \"%s{variable.Name}\" is extern and has init expression."
+
     match variable.InitExpr with
     | Some expr ->
         let! exprType = getExpressionType expr
