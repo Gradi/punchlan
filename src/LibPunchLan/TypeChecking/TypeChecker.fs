@@ -216,6 +216,10 @@ let rec getExpressionType (expr: Expression) : TypeCheckerM.M<SourceContext, Typ
     | StructCreation (name, fieldsInits) ->
         let! typeType = locateTypeDecl name
 
+        let fieldDuplicates = MList.duplicates (List.map fst fieldsInits)
+        if not (List.isEmpty fieldDuplicates) then
+            yield! diag $"%O{typeType.TypeDecl.TypeType}'s initializer has duplicated fields: %A{fieldDuplicates}"
+
         for field, expr in fieldsInits do
             let! rightType = getExpressionType expr
             match MList.tryLookup field typeType.TypeDecl.Fields with

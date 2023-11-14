@@ -1,0 +1,11 @@
+﻿#FAIL Struct's initializer has duplicated fields: \["field1"\]
+
+struct Foo
+    field1: int64
+    field2: int64
+endstruct
+
+var foo: Foo = Foo {
+    field1 = 1
+    field1 = 2
+}
