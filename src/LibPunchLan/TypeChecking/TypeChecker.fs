@@ -220,6 +220,10 @@ let rec getExpressionType (expr: Expression) : TypeCheckerM.M<SourceContext, Typ
         if not (List.isEmpty fieldDuplicates) then
             yield! diag $"%O{typeType.TypeDecl.TypeType}'s initializer has duplicated fields: %A{fieldDuplicates}"
 
+        if typeType.TypeDecl.TypeType = TypeType.Union &&
+           List.length fieldsInits > 1 then
+               yield! diag $"Union \"%s{typeType.TypeDecl.Name}\"'s initializer must initialize only one (1) field at the time."
+
         for field, expr in fieldsInits do
             let! rightType = getExpressionType expr
             match MList.tryLookup field typeType.TypeDecl.Fields with

@@ -1,0 +1,12 @@
+﻿#FAIL Union "Foo"'s initializer must initialize only one \(1\) field at the time.
+
+union Foo
+    field1: int64
+    field2: char
+    field3: bool
+endunion
+
+var foo: Foo = Foo {
+    field1 = 123
+    field2 = 'L'
+}
