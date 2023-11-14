@@ -1,0 +1,8 @@
+﻿#FAIL func function: 'defer' statement can't have 'return' statements
+
+func function ()
+    defer
+        var f: int32 = 123
+        return
+    enddefer
+endfunc

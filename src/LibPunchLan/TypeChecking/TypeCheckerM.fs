@@ -278,3 +278,36 @@ let getStringsFromSource (source: Source) : string seq = seq {
         |> Seq.collect getExpressionsFromStatement
         |> Seq.collect getStringsFromExpression
 }
+
+let rec flattenStatement (statement: Statement) : Statement seq = seq {
+    yield statement
+    match statement with
+    | Statement.VarDecl _
+    | Statement.VarAssignment _ -> ()
+    | Statement.If (main, elseIfs, elses) ->
+        yield!
+            main.Body
+            |> Seq.collect flattenStatement
+        yield!
+            elseIfs
+            |> Seq.collect (fun e -> e.Body)
+            |> Seq.collect flattenStatement
+        yield!
+            elses
+            |> Seq.collect flattenStatement
+    | Statement.For (_, _, _, _, body) ->
+        yield!
+            body
+            |> Seq.collect flattenStatement
+    | Statement.While (_, body) ->
+        yield!
+            body
+            |> Seq.collect flattenStatement
+    | Statement.Defer body ->
+        yield!
+            body
+            |> Seq.collect flattenStatement
+    | Statement.Return
+    | Statement.ReturnExpr _
+    | Statement.Expression _ -> ()
+}
