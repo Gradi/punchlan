@@ -240,6 +240,10 @@ let rec checkFunctionStatement (statement: Statement) : TypeCheckerM.M<SourceFun
     match statement with
     | Statement.VarDecl (name, typ, expr) ->
         do! checkWithContext sourceContext (checkNamedTypeIdExists typ)
+
+        if TypeId.isVoid typ then
+            yield! diag' $"Function local variable \"%s{name}\" can't have type 'void'."
+
         match expr with
         | Some expr ->
             let! exprTyp = checkWithContext sourceContext (getExpressionType expr)
@@ -329,6 +333,9 @@ let checkVariableDeclaration (variable: Variable) : TypeCheckerM.M<SourceContext
     let! source = getFromContext (fun c -> c.CurrentSource)
     do! checkNamedTypeIdExists variable.TypeId
 
+    if TypeId.isVoid variable.TypeId then
+        yield! diag $"Variable \"%s{variable.Name}\" can't have void type."
+
     match variable.InitExpr with
     | Some expr ->
         let! exprType = getExpressionType expr
@@ -343,6 +350,9 @@ let checkFunctionDeclaration (func: Function) : TypeCheckerM.M<SourceContext, un
 
     let duplicatedArgs = func.Args |> List.map fst |> MList.duplicates
     if not (List.isEmpty duplicatedArgs) then yield! diag $"Function \"%s{func.Name}\" contains duplicated arguments: %A{duplicatedArgs}"
+
+    let voidFields = func.Args |> List.filter (fun (_, t) -> TypeId.isVoid t)
+    if not (List.isEmpty voidFields) then yield! diag $"Function \"%s{func.Name}\" has void arguments: %A{List.map fst voidFields}"
 
     do! checkNamedTypeIdExists func.ReturnType
 
@@ -363,6 +373,9 @@ let checkTypeDeclaration (typ: TypeDecl) : TypeCheckerM.M<SourceContext, unit> =
 
     for typ in typ.Fields |> List.map snd do
         do! checkNamedTypeIdExists typ
+
+    let voidFields = typ.Fields |> List.map snd |> List.filter TypeId.isVoid
+    if not (List.isEmpty voidFields) then yield! diag $"Type \"%s{typ.Name}\" has fields with 'void' type."
 
     let visitedDecls = System.Collections.Generic.HashSet<TypeDecl> ()
 

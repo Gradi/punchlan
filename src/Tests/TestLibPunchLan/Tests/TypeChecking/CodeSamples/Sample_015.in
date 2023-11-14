@@ -1,0 +1,4 @@
+﻿#FAIL Function "functionWithVoidArgs" has void arguments: \["voidField"\]
+
+func functionWithVoidArgs(field: int32, voidField: void)
+endfunc

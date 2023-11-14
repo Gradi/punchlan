@@ -1,0 +1,5 @@
+﻿#FAIL Function local variable "localVariable" can't have type 'void'
+
+func function()
+    var localVariable : void
+endfunc

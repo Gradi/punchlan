@@ -1,0 +1,5 @@
+﻿#FAIL Type "Foo" has fields with 'void' type
+
+struct Foo
+    field: void
+endstruct

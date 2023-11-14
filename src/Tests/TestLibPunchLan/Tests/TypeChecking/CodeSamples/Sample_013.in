@@ -1,0 +1,3 @@
+﻿#FAIL Variable "variable" can't have void type
+
+var variable: void
