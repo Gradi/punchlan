@@ -1,5 +1,8 @@
 module LibPunchLan.CodeGen.NasmCodegenerator
 
+#nowarn "9"
+#nowarn "51"
+
 open System
 open System.Text
 open LibPunchLan
@@ -127,7 +130,12 @@ let number2nasm (number: Number) =
         let str = binInts |> Array.map NumberMod.bitIntToStr |> String.concat ""
         sprintf $"%s{sign}%s{str}b"
     | Number.Double dbl ->
-        sprintf $"(%f{dbl})"
+        // Converts double to its hex representation
+        assert (sizeof<double> = sizeof<uint64>)
+        let mutable double: double = dbl
+        let mutable pdouble: nativeint = NativeInterop.NativePtr.toNativeInt (&&double)
+        let mutable long: uint64 = NativeInterop.NativePtr.ofNativeInt<uint64> pdouble |> NativeInterop.NativePtr.read
+        sprintf $"0%016x{long}h"
     | Number.Negative _ -> failwith "Negative number should have been removed at this point."
 
 let string2nasm (str: string) =
@@ -138,7 +146,6 @@ let string2nasm (str: string) =
         |> Seq.map (fun b -> sprintf $"0%x{b}h")
     let hex = Seq.append hex (Seq.init 8 (fun _ -> "00h"))
     String.concat ", " hex
-
 
 
 let getField (typ: TypeDeclRef) (name: string) : TypeCheckerM.M<NasmContext, FieldInfo> = tchecker {
@@ -272,6 +279,7 @@ let writeCopyFromStack (typ: TypeRef) : TypeCheckerM.M<NasmContext, unit> = tche
         do! bprintfn $"push %d{size}"
         do! bprintfn "push rax"
         do! bprintfn "push rsp"
+        do! bprintfn "memcopy"
         do! bprintfn $"add rsp, %d{align size 8}"
     | typ -> failwithf $"Type '%O{typ}' should have been covered"
 }
@@ -409,7 +417,16 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! writeCopyToStack { TypeId = arraySubitemType; Source = arrayType.Source }
 
         | Expression.StructCreation (name, fields) as expr ->
-            failwith "Struct creation to be implemented."
+            let! size = sourceContext (getExpressionSize expr)
+            let! typeDecl = sourceContext (locateTypeDecl name)
+
+            do! bprintfn $"sub rsp, %d{align size 8}"
+            for fieldName, fieldExpr in fields do
+                let! fieldInfo = getField typeDecl fieldName
+                do! writeExpression fieldExpr
+                do! bprintfn $"lea rax, qword [rsp+%d{fieldInfo.Offset}]"
+                do! bprintfn "push rax"
+                do! writeCopyFromStack fieldInfo.Type
 
         | Expression.Bininversion expr ->
             do! writeExpression expr
