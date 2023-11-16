@@ -57,6 +57,8 @@ type Keyword =
     | And | Or | Not
     | Xor
 
+    | Sizeof
+
 type Number =
     | Integer of DecInt array
     | HexInteger of HexInt array

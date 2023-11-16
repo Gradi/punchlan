@@ -243,6 +243,10 @@ let rec getExpressionType (expr: Expression) : TypeCheckerM.M<SourceContext, Typ
         let typE = TypeId.unwrapConst typ.TypeId
         if not (List.contains typE TypeId.integerTypes) then yield! diag $"Operator '~' only accepts numeric types as argument, but not \"%O{typ}\""
         yield typ
+
+    | Expression.Sizeof typeId ->
+        let! _ = checkNamedTypeIdExists typeId
+        yield { TypeId = TypeId.Uint64; Source = source }
 }
 
 let rec checkFunctionStatement (statement: Statement) : TypeCheckerM.M<SourceFunctionContext, unit> = tchecker {

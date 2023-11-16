@@ -266,6 +266,12 @@ module private rec Expressions =
                 do! returnLex input
                 return! parseError input "Expected constant number after '-'"
 
+        | { Lexeme = Lexeme.Keyword Keyword.Sizeof } ->
+            do! consume Lexeme.LParen
+            let! typeid = parseTypeId ()
+            do! consume Lexeme.RParen
+            return Expression.Sizeof typeid
+
         | input ->
             do! returnLex input
             return! parseError input "Expected '~', string, number, true|false, char, identifier.identifier ( ARGS ), identifier.identifier { FIELDS }, identifier, '-' number"

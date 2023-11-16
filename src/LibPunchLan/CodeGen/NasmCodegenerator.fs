@@ -416,6 +416,11 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! bprintfn "pop rax"
             do! bprintfn "not rax"
             do! bprintfn "push rax"
+
+        | Expression.Sizeof typeId ->
+            let! size = sourceContext (getTypeIdSize { TypeId = typeId; Source = ssourceContext.CurrentSource })
+            do! bprintfn $"mov rax, %d{size}d"
+            do! bprintfn "push rax"
     }
 
     and writeBinaryExpression (expression: BinaryExpression) : TypeCheckerM.M<NasmContext, unit> = tchecker {
@@ -850,7 +855,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         | Expression.Variable name ->
             match Map.tryFind name stackEnv with
             | Some stackOffset ->
-                do! bprintfn $"lea rax, byte [rbp%+d{stackOffset}]"
+                do! bprintfn $"lea rax, qword [rbp%+d{stackOffset}]"
                 do! bprintfn "push rax"
             | None ->
                 let! varDecl = sourceContext (locateVariableDecl { Name = name; Alias = None })

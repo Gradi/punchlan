@@ -272,6 +272,7 @@ let private stringToKeywordOrIdentifier str =
     | "or" -> Lexeme.Keyword Keyword.Or
     | "not" -> Lexeme.Keyword Keyword.Not
     | "xor" -> Lexeme.Keyword Keyword.Xor
+    | "sizeof" -> Lexeme.Keyword Keyword.Sizeof
     | str -> Lexeme.Identifier str
 
 

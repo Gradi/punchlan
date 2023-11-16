@@ -156,6 +156,8 @@ let rec private writeExpression (expr: Expression) sb =
     | Bininversion expr ->
         bprintf sb "~"
         writeExpression expr sb
+    | Sizeof typeId ->
+        bprintf sb $"sizeof (%O{typeId})"
 
     bprintf sb ")"
 
