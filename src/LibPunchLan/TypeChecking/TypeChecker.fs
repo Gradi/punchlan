@@ -258,6 +258,13 @@ let rec getExpressionType (expr: Expression) : TypeCheckerM.M<SourceContext, Typ
         | _ ->
             yield! fatalDiag "Only variable/member access/array access can be argument for 'addrof' function."
 
+    | Expression.Cast (targetTypeId, expression) ->
+        let! sourceType = getExpressionType expression
+        let destinationType = { TypeId =  targetTypeId; Source = source }
+        match TypeId.isCastValid sourceType destinationType with
+        | true -> yield destinationType
+        | false -> yield! fatalDiag $"Cast from '%O{sourceType}' to '%O{destinationType}' is not valid."
+
     | Expression.Deref expression ->
         let! typ = getExpressionType expression
         match TypeId.unwrapConst typ.TypeId with

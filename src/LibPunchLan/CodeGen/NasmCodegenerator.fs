@@ -431,6 +431,45 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                 do! writeExpression expr
                 do! writeCopyToStack { TypeId = subtype; Source = typeId.Source }
             | _ -> yield! sourceContext (fatalDiag "Only expression of type 'pointer<>' can be used as an argument for 'deref' function.")
+
+        | Expression.Cast (targetType, sourceExpression) ->
+            let! sourceType = sourceContext (getExpressionType sourceExpression)
+            let destinationType = { TypeId = targetType; Source = ssourceContext.CurrentSource }
+            match TypeId.isTypesEqual sourceType destinationType with
+            | true -> do! writeExpression sourceExpression
+            | false ->
+                let left = sourceType.TypeId
+                let right = destinationType.TypeId
+
+                if (TypeId.isSigned left && TypeId.isUnsigned right) ||
+                   (TypeId.isUnsigned left && TypeId.isSigned right) then
+
+                    do! writeExpression sourceExpression
+
+                elif (TypeId.isSigned left || TypeId.isUnsigned right) &&
+                     TypeId.isFloat right then
+
+                    do! writeExpression sourceExpression
+                    do! bprintfn "fild qword [rsp]"
+                    do! bprintfn "mov rax, 0"
+                    do! bprintfn "mov qword [rsp], rax"
+                    do! bprintfn "fstp qword [rsp]"
+
+                elif TypeId.isFloat left &&
+                     (TypeId.isSigned right || TypeId.isUnsigned right) then
+
+                    do! writeExpression sourceExpression
+                    do! bprintfn "fld qword [rsp]"
+                    do! bprintfn "mov rax, 0"
+                    do! bprintfn "mov qword [rsp], rax"
+                    do! bprintfn "fistp qword [rsp]"
+
+                elif TypeId.isPointer left && TypeId.isPointer right then
+                    do! writeExpression sourceExpression
+
+                else
+                    yield! sourceContext (diag $"Cast from '%O{sourceType}' to '%O{destinationType}' should have been covered.")
+
     }
 
     and writeBinaryExpression (expression: BinaryExpression) : TypeCheckerM.M<NasmContext, unit> = tchecker {

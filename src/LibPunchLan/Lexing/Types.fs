@@ -60,6 +60,7 @@ type Keyword =
     | Sizeof
     | Addrof
     | Deref
+    | Cast
 
 type Number =
     | Integer of DecInt array

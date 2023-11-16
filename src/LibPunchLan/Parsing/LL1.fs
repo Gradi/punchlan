@@ -284,6 +284,14 @@ module private rec Expressions =
             do! consume Lexeme.RParen
             return Expression.Deref expr
 
+        | { Lexeme = Lexeme.Keyword Keyword.Cast } ->
+            do! consume Lexeme.LParen
+            let! typeid = parseTypeId ()
+            do! consume Lexeme.Comma
+            let! expr = parseExpression ()
+            do! consume Lexeme.RParen
+            return Expression.Cast (typeid, expr)
+
         | input ->
             do! returnLex input
             return! parseError input "Expected expression start"

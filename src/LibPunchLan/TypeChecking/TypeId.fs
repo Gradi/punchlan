@@ -83,3 +83,26 @@ let isTypesEqual (expected: TypeRef) (actual: TypeRef) : bool =
             unwrapConst expected.TypeId = unwrapConst actual.TypeId &&
             expected.Source = actual.Source
         | _ -> left = right
+
+let isCastValid (source: TypeRef) (destination: TypeRef) =
+    match isTypesEqual source destination with
+    | true -> true
+    | false ->
+        let left = source.TypeId
+        let right = destination.TypeId
+
+        if isSigned left && isUnsigned right then true
+
+        elif isUnsigned left && isSigned right then true
+
+        elif isSigned left && isFloat right then true
+
+        elif isUnsigned left && isFloat right then true
+
+        elif isFloat left && isSigned right then true
+
+        elif isFloat left && isUnsigned right then true
+
+        elif isPointer left && isPointer right then true
+
+        else false

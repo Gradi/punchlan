@@ -164,6 +164,11 @@ let rec private writeExpression (expr: Expression) sb =
     | Deref expr ->
         bprintf sb "deref "
         writeExpression expr sb
+    | Cast (typeid, expr) ->
+        bprintf sb $"cast (%O{typeid}, "
+        writeExpression expr sb
+        bprintf sb ")"
+
 
     bprintf sb ")"
 

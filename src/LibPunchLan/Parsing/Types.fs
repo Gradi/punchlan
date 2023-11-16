@@ -105,6 +105,7 @@ type Expression =
     | Sizeof of TypeId
     | Addrof of Expression
     | Deref of Expression
+    | Cast of TypeId * Expression
 
 [<NoComparison;ReferenceEquality>]
 type BinaryExpression =
