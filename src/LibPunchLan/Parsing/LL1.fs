@@ -108,19 +108,19 @@ module private rec Expressions =
             | { Lexeme = Lexeme.LABracket } ->
                 let! right = parseExpr2 ()
                 return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.Less })
-            | { Lexeme = Lexeme.Operator "<=" } ->
+            | { Lexeme = Lexeme.LessThanOrEqual } ->
                 let! right = parseExpr2 ()
                 return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.LessOrEqual })
-            | { Lexeme = Lexeme.Operator "==" } ->
+            | { Lexeme = Lexeme.DEqual } ->
                 let! right = parseExpr2 ()
                 return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.Equal })
             | { Lexeme = Lexeme.RABracket } ->
                 let! right = parseExpr2 ()
                 return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.Greater })
-            | { Lexeme = Lexeme.Operator ">=" } ->
+            | { Lexeme = Lexeme.GreaterThanOrEqual } ->
                 let! right = parseExpr2 ()
                 return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.GreaterOrEqual })
-            | { Lexeme = Lexeme.Operator "!=" } ->
+            | { Lexeme = Lexeme.NotEqual } ->
                 let! right = parseExpr2 ()
                 return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.NotEqual })
             | input ->
