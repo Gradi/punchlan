@@ -247,6 +247,16 @@ let rec getExpressionType (expr: Expression) : TypeCheckerM.M<SourceContext, Typ
     | Expression.Sizeof typeId ->
         let! _ = checkNamedTypeIdExists typeId
         yield { TypeId = TypeId.Uint64; Source = source }
+
+    | Expression.Addrof expression ->
+        match expression with
+        | Variable _
+        | MemberAccess _
+        | ArrayAccess _ ->
+            let! typ = getExpressionType expression
+            yield { TypeId = TypeId.Pointer typ.TypeId; Source = source }
+        | _ ->
+            yield! fatalDiag "Only variable/member access/array access can be argument for 'addrof' function."
 }
 
 let rec checkFunctionStatement (statement: Statement) : TypeCheckerM.M<SourceFunctionContext, unit> = tchecker {

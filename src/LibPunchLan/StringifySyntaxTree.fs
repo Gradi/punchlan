@@ -158,6 +158,9 @@ let rec private writeExpression (expr: Expression) sb =
         writeExpression expr sb
     | Sizeof typeId ->
         bprintf sb $"sizeof (%O{typeId})"
+    | Addrof expr ->
+        bprintf sb "addrof "
+        writeExpression expr sb
 
     bprintf sb ")"
 

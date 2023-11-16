@@ -58,6 +58,7 @@ type Keyword =
     | Xor
 
     | Sizeof
+    | Addrof
 
 type Number =
     | Integer of DecInt array

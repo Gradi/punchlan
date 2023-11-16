@@ -272,6 +272,12 @@ module private rec Expressions =
             do! consume Lexeme.RParen
             return Expression.Sizeof typeid
 
+        | { Lexeme = Lexeme.Keyword Keyword.Addrof } ->
+            do! consume Lexeme.LParen
+            let! expr = parseExpression ()
+            do! consume Lexeme.RParen
+            return Expression.Addrof expr
+
         | input ->
             do! returnLex input
             return! parseError input "Expected '~', string, number, true|false, char, identifier.identifier ( ARGS ), identifier.identifier { FIELDS }, identifier, '-' number"

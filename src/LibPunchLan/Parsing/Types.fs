@@ -103,6 +103,7 @@ type Expression =
     | StructCreation of DotString * (string * Expression) list
     | Bininversion of Expression
     | Sizeof of TypeId
+    | Addrof of Expression
 
 [<NoComparison;ReferenceEquality>]
 type BinaryExpression =

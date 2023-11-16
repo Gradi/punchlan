@@ -421,6 +421,8 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             let! size = sourceContext (getTypeIdSize { TypeId = typeId; Source = ssourceContext.CurrentSource })
             do! bprintfn $"mov rax, %d{size}d"
             do! bprintfn "push rax"
+
+        | Expression.Addrof expr -> do! writeExpressionAddress expr
     }
 
     and writeBinaryExpression (expression: BinaryExpression) : TypeCheckerM.M<NasmContext, unit> = tchecker {
