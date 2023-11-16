@@ -423,6 +423,14 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! bprintfn "push rax"
 
         | Expression.Addrof expr -> do! writeExpressionAddress expr
+
+        | Expression.Deref expr ->
+            let! typeId = sourceContext (getExpressionType expr)
+            match TypeId.unwrapConst typeId.TypeId with
+            | TypeId.Pointer subtype ->
+                do! writeExpression expr
+                do! writeCopyToStack { TypeId = subtype; Source = typeId.Source }
+            | _ -> yield! sourceContext (fatalDiag "Only expression of type 'pointer<>' can be used as an argument for 'deref' function.")
     }
 
     and writeBinaryExpression (expression: BinaryExpression) : TypeCheckerM.M<NasmContext, unit> = tchecker {
@@ -440,7 +448,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! writeExpression right
             do! writeExpression left
 
-            if (TypeId.isPointerType leftType || TypeId.isPointerType rightType) &&
+            if (TypeId.isPointer leftType || TypeId.isPointer rightType) &&
                (TypeId.isUnsigned leftType || TypeId.isUnsigned rightType) then
 
                 do! bprintfn "pop rax"
@@ -469,7 +477,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! writeExpression right
             do! writeExpression left
 
-            if (TypeId.isPointerType leftType || TypeId.isPointerType rightType) &&
+            if (TypeId.isPointer leftType || TypeId.isPointer rightType) &&
                (TypeId.isUnsigned leftType || TypeId.isUnsigned rightType) then
 
                 do! bprintfn "pop rax"
@@ -554,7 +562,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! writeExpression right
             do! writeExpression left
 
-            if ((TypeId.isPointerType leftType || TypeId.isPointerType rightType) &&
+            if ((TypeId.isPointer leftType || TypeId.isPointer rightType) &&
                (TypeId.isUnsigned leftType || TypeId.isUnsigned rightType)) ||
                (TypeId.isIntegerType leftType && TypeId.isIntegerType rightType) ||
                (TypeId.isFloat leftType && TypeId.isFloat rightType)  ||
@@ -579,7 +587,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! writeExpression right
             do! writeExpression left
 
-            if ((TypeId.isPointerType leftType || TypeId.isPointerType rightType) &&
+            if ((TypeId.isPointer leftType || TypeId.isPointer rightType) &&
                (TypeId.isUnsigned leftType || TypeId.isUnsigned rightType)) ||
                (TypeId.isIntegerType leftType && TypeId.isIntegerType rightType) ||
                (TypeId.isBool leftType && TypeId.isBool rightType) then
@@ -603,7 +611,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! writeExpression right
             do! writeExpression left
 
-            if ((TypeId.isPointerType leftType || TypeId.isPointerType rightType) &&
+            if ((TypeId.isPointer leftType || TypeId.isPointer rightType) &&
                (TypeId.isUnsigned leftType || TypeId.isUnsigned rightType)) ||
                (TypeId.isIntegerType leftType && TypeId.isIntegerType rightType) then
 
@@ -641,7 +649,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! writeExpression right
             do! writeExpression left
 
-            if ((TypeId.isPointerType leftType || TypeId.isPointerType rightType) &&
+            if ((TypeId.isPointer leftType || TypeId.isPointer rightType) &&
                 (TypeId.isUnsigned leftType || TypeId.isUnsigned rightType)) ||
                (TypeId.isIntegerType leftType && TypeId.isIntegerType rightType) then
 
@@ -681,7 +689,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! writeExpression right
             do! writeExpression left
 
-            if ((TypeId.isPointerType leftType || TypeId.isPointerType rightType) &&
+            if ((TypeId.isPointer leftType || TypeId.isPointer rightType) &&
                 (TypeId.isUnsigned leftType || TypeId.isUnsigned rightType) ||
                 (TypeId.isIntegerType leftType || TypeId.isIntegerType rightType)) then
 
@@ -716,7 +724,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! writeExpression right
             do! writeExpression left
 
-            if ((TypeId.isPointerType leftType || TypeId.isPointerType rightType) &&
+            if ((TypeId.isPointer leftType || TypeId.isPointer rightType) &&
                 (TypeId.isUnsigned leftType || TypeId.isUnsigned rightType) ||
                 (TypeId.isIntegerType leftType || TypeId.isIntegerType rightType)) then
 
@@ -909,6 +917,8 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! bprintfn $"mul rbx, rbx, %d{size}"
             do! bprintfn "lea rax, byte [rax+rbx]"
             do! bprintfn "push rax"
+
+        | Expression.Deref expression -> do! writeExpression expression
 
         | expression ->
             let! typ = sourceContext (getExpressionType expression)

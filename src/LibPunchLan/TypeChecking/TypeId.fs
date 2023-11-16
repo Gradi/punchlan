@@ -24,7 +24,7 @@ let isConst (typ: TypeId) =
     | Const _ -> true
     | _ -> false
 
-let isPointerType (typ: TypeId) =
+let isPointer (typ: TypeId) =
     match unwrapConst typ with
     | Pointer _ -> true
     | _ -> false
@@ -75,7 +75,7 @@ let isTypesEqual (expected: TypeRef) (actual: TypeRef) : bool =
 
     elif isFloat left && isFloat right then true
 
-    elif isPointerType left && isUnsigned right then true
+    elif isPointer left && isUnsigned right then true
 
     else
         match unwrapConst left, unwrapConst right with

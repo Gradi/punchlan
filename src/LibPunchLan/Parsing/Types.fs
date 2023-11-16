@@ -104,6 +104,7 @@ type Expression =
     | Bininversion of Expression
     | Sizeof of TypeId
     | Addrof of Expression
+    | Deref of Expression
 
 [<NoComparison;ReferenceEquality>]
 type BinaryExpression =

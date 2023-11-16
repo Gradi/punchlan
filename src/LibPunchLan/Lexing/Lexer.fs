@@ -274,6 +274,7 @@ let private stringToKeywordOrIdentifier str =
     | "xor" -> Lexeme.Keyword Keyword.Xor
     | "sizeof" -> Lexeme.Keyword Keyword.Sizeof
     | "addrof" -> Lexeme.Keyword Keyword.Addrof
+    | "deref" -> Lexeme.Keyword Keyword.Deref
     | str -> Lexeme.Identifier str
 
 

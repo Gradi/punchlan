@@ -161,6 +161,9 @@ let rec private writeExpression (expr: Expression) sb =
     | Addrof expr ->
         bprintf sb "addrof "
         writeExpression expr sb
+    | Deref expr ->
+        bprintf sb "deref "
+        writeExpression expr sb
 
     bprintf sb ")"
 

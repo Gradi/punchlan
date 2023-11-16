@@ -59,6 +59,7 @@ type Keyword =
 
     | Sizeof
     | Addrof
+    | Deref
 
 type Number =
     | Integer of DecInt array

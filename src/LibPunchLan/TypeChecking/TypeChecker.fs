@@ -150,8 +150,8 @@ let rec getExpressionType (expr: Expression) : TypeCheckerM.M<SourceContext, Typ
 
             (* If (left is pointer AND right is numeric) OR (left is numeric AND right is pointer) it means
                we are dealing with pointer arithmetics *)
-            if (TypeId.isPointerType leftTyp && TypeId.isUnsigned rightTyp) then yield leftType
-            elif (TypeId.isPointerType rightTyp && TypeId.isUnsigned leftTyp) then yield rightType
+            if (TypeId.isPointer leftTyp && TypeId.isUnsigned rightTyp) then yield leftType
+            elif (TypeId.isPointer rightTyp && TypeId.isUnsigned leftTyp) then yield rightType
             else
 
                 if not (TypeId.isTypesEqual leftType rightType) then
@@ -257,6 +257,12 @@ let rec getExpressionType (expr: Expression) : TypeCheckerM.M<SourceContext, Typ
             yield { TypeId = TypeId.Pointer typ.TypeId; Source = source }
         | _ ->
             yield! fatalDiag "Only variable/member access/array access can be argument for 'addrof' function."
+
+    | Expression.Deref expression ->
+        let! typ = getExpressionType expression
+        match TypeId.unwrapConst typ.TypeId with
+        | TypeId.Pointer ptyp -> yield { TypeId = ptyp; Source = typ.Source }
+        | _ -> yield! fatalDiag "Only expression of type 'pointer<>' can be used as an argument for 'deref' function."
 }
 
 let rec checkFunctionStatement (statement: Statement) : TypeCheckerM.M<SourceFunctionContext, unit> = tchecker {
@@ -285,8 +291,9 @@ let rec checkFunctionStatement (statement: Statement) : TypeCheckerM.M<SourceFun
         match left with
         | Variable _
         | MemberAccess _
-        | ArrayAccess _ -> ()
-        | _ -> yield! diag' "You can only assign to variable, member access, array access expressions."
+        | ArrayAccess _
+        | Expression.Deref _ -> ()
+        | _ -> yield! diag' "You can only assign to variable, member access, array access, deref expressions."
 
     | Statement.If (main, elseIfs, elsE) ->
         let checkIfCond cond : TypeCheckerM.M<SourceFunctionContext, unit> = tchecker {

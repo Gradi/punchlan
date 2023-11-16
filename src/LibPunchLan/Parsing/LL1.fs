@@ -278,9 +278,15 @@ module private rec Expressions =
             do! consume Lexeme.RParen
             return Expression.Addrof expr
 
+        | { Lexeme = Lexeme.Keyword Keyword.Deref } ->
+            do! consume Lexeme.LParen
+            let! expr = parseExpression ()
+            do! consume Lexeme.RParen
+            return Expression.Deref expr
+
         | input ->
             do! returnLex input
-            return! parseError input "Expected '~', string, number, true|false, char, identifier.identifier ( ARGS ), identifier.identifier { FIELDS }, identifier, '-' number"
+            return! parseError input "Expected expression start"
     }
 
     let parseFunctionArguments () = parser {
@@ -335,7 +341,8 @@ module private rec Expressions =
         | Lexeme.Keyword Keyword.True
         | Lexeme.Keyword Keyword.False
         | Lexeme.Identifier _
-        | Lexeme.Operator "-" -> true
+        | Lexeme.Operator "-"
+        | Lexeme.Keyword Keyword.Deref -> true
         | _ -> false
 
 module private rec Statements =
