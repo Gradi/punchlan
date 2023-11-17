@@ -490,7 +490,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         let left = expression.Left
         let right = expression.Right
         let! leftType = sourceContext (getExpressionType left)
-        let! rightType = sourceContext (getExpressionType left)
+        let! rightType = sourceContext (getExpressionType right)
         let leftType = leftType.TypeId
         let rightType = rightType.TypeId
         let! allocator = getFromContext (fun c -> c.Allocator)
@@ -568,7 +568,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             elif TypeId.isUnsigned leftType && TypeId.isUnsigned rightType then
                 do! bprintfn "pop rax"
                 do! bprintfn "pop rbx"
-                do! bprintfn "mul rax, rbx"
+                do! bprintfn "mul rbx"
                 do! bprintfn "push rax"
 
             elif TypeId.isFloat leftType && TypeId.isFloat rightType then

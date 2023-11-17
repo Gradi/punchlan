@@ -415,23 +415,26 @@ let checkFunctionDeclaration (func: Function) : TypeCheckerM.M<SourceContext, un
 
     do! checkNamedTypeIdExists func.ReturnType
 
-    if Option.exists (fun m -> m = Modifier.Extern) func.Modifier &&
-       not (List.isEmpty func.Body) then
+    match func.Modifier with
+    | Some Modifier.Extern ->
+        if not (List.isEmpty func.Body) then
            yield! diag $"Function \"%s{func.Name}\" is extern function and have a body."
+    | Some Modifier.Export
+    | None ->
 
-    if not (TypeId.isVoid func.ReturnType) &&
-       not (statementChainContainsReturnExpr func.Body) then
-           yield! diag $"Function \"%s{func.Name}\" with return type \"%O{func.ReturnType}\" doesn't have return <expr> statement."
+        if not (TypeId.isVoid func.ReturnType) &&
+           not (statementChainContainsReturnExpr func.Body) then
+               yield! diag $"Function \"%s{func.Name}\" with return type \"%O{func.ReturnType}\" doesn't have return <expr> statement."
 
-    let! source = getFromContext (fun c -> c.CurrentSource)
-    let! context = getFromContext (fun c -> c.WithFunction func)
-    let env = lazy (
-            func.Args
-            |> List.fold (fun env (field, typ) -> Map.add field { TypeId = typ; Source = source } env) context.NameTypeEnv.Value
-        )
-    let context = { context with NameTypeEnv = env }
+        let! source = getFromContext (fun c -> c.CurrentSource)
+        let! context = getFromContext (fun c -> c.WithFunction func)
+        let env = lazy (
+                func.Args
+                |> List.fold (fun env (field, typ) -> Map.add field { TypeId = typ; Source = source } env) context.NameTypeEnv.Value
+            )
+        let context = { context with NameTypeEnv = env }
 
-    do! checkWithContext context (checkStatementList func.Body)
+        do! checkWithContext context (checkStatementList func.Body)
 }
 
 let checkTypeDeclaration (typ: TypeDecl) : TypeCheckerM.M<SourceContext, unit> = tchecker {
