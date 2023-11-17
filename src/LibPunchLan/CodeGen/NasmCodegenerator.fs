@@ -155,12 +155,52 @@ let string2nasm (str: string) =
     let hex = Seq.append hex (Seq.init 8 (fun _ -> "00h"))
     String.concat ", " hex
 
+let rec expr2str (expression: Expression) =
+    match expression with
+    | Expression.Constant (Value.String str) -> sprintf $"\"string: %s{getStringLabel str}\""
+    | Expression.Constant (Value.Number number) -> number2nasm number
+    | Expression.Constant (Value.Boolean bool) -> bool.ToString ()
+    | Expression.Constant (Value.Char char) -> char.ToString ()
+    | Expression.Variable varname -> varname
+    | Expression.FuncCall (name, args) ->
+        let args = args |> List.map expr2str |> String.concat ", "
+        sprintf $"%O{name} (%s{args})"
+    | Expression.MemberAccess (left, name) -> sprintf $"%s{expr2str left}.%s{name}"
+    | Expression.BinaryExpression { Left = left; Right = right; Kind = kind } ->
+        let kind =
+            match kind with
+            |  Plus -> "+"
+            | Minus -> "-"
+            | Multiply -> "*"
+            | Division -> "/"
+            | BinaryExpressionKind.Equal -> "=="
+            | BinaryExpressionKind.NotEqual -> "!="
+            | Less -> "<"
+            | LessOrEqual -> "<="
+            | Greater -> ">"
+            | GreaterOrEqual -> ">="
+            | BinaryExpressionKind.Or -> "or"
+            | BinaryExpressionKind.And -> "and"
+            | BinaryExpressionKind.Xor -> "xor"
+            | RShift -> ">>"
+            | LShift -> "<<"
+        sprintf $"(%s{expr2str left}) %s{kind} (%s{expr2str right})"
+    | Expression.ArrayAccess (left, right) -> sprintf $"%s{expr2str left}[%s{expr2str right}]"
+    | Expression.StructCreation (name, fields) ->
+        let fields = fields |> List.map (fun (name, expr) -> sprintf $"%s{name} = %s{expr2str expr}") |> String.concat " "
+        sprintf $"%O{name} {{ %s{fields} }}"
+    | Expression.Bininversion expr -> sprintf $"~(%s{expr2str expr})"
+    | Expression.Sizeof typeid -> sprintf $"sizeof(%O{typeid})"
+    | Expression.Addrof expr -> sprintf $"addrof(%s{expr2str expr})"
+    | Expression.Deref expr -> sprintf $"deref(%s{expr2str expr})"
+    | Expression.Cast (typeid, expr) -> sprintf $"cast(%O{typeid}, %s{expr2str expr})"
+
 
 let getField (typ: TypeDeclRef) (name: string) : TypeCheckerM.M<NasmContext, FieldInfo> = tchecker {
     let! fields = sourceContext (getTypeDeclFields typ)
     match fields |> List.tryFind (fun f -> f.Name = name) with
     | Some field -> yield field
-    | None -> yield! sourceContext (fatalDiag $"Can't find field namde '%s{name}' in '%O{typ}'")
+    | None -> yield! sourceContext (fatalDiag $"Can't find field name '%s{name}' in '%O{typ}'")
 }
 
 let getFuncCallInfo (func: Function) : TypeCheckerM.M<SourceContext, FuncCallInfo>  = tchecker {
@@ -298,6 +338,8 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
     let rec writeExpression (expression: Expression) : TypeCheckerM.M<NasmContext, unit>  = tchecker {
         let! ssourceContext = getFromContext (fun c -> c.WithSource ())
+
+        do! bprintfn $"; %s{expr2str expression}"
 
         match expression with
 
@@ -998,19 +1040,23 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             let nameTypeEnv = lazy (Map.add name { TypeId = varType; Source = source } nameTypeEnv.Value)
             let! context = getFromContext (fun c -> { c with NameTypeEnv = nameTypeEnv; StackEnv = stackEnv })
 
+            do! bprintf $"; var %s{name} : %O{varType}"
+
             match initExpr with
             | Some expression ->
+                do! bprintfn $" = %s{expr2str expression}"
                 let! exprType = sourceContext (getExpressionType expression)
                 do! writeExpression expression
                 do! checkWithContext context (writeExpressionAddress (Expression.Variable name))
                 do! writeCopyFromStack exprType
-            | None -> ()
+            | None -> do! bprintfn ""
 
             yield context
 
         | Statement.VarAssignment (leftExpr, rightExpr) ->
             let! leftExprType = sourceContext (getExpressionType leftExpr)
 
+            do! bprintfn $"; %s{expr2str leftExpr} = %s{expr2str rightExpr}"
             do! writeExpression rightExpr
             do! writeExpressionAddress leftExpr
             do! writeCopyFromStack leftExprType
@@ -1021,12 +1067,14 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             let! allocator = getFromContext (fun c -> c.Allocator)
             let endOfIfBranch = allocator.AllocateLabel "end_of_if"
             let writeIfCond (ifCond: IfCond) elseBranch : TypeCheckerM.M<NasmContext, unit> = tchecker {
+                do! bprintfn $"; if %s{expr2str ifCond.Condition} then  "
                 do! writeExpression ifCond.Condition
                 do! bprintfn "pop rax"
                 do! bprintfn "cmp rax, 0"
                 do! bprintfn $"je %s{elseBranch}"
                 do! writeStatements ifCond.Body endOfFunctionLabel
                 do! bprintfn $"jmp %s{endOfIfBranch}"
+                do! bprintfn "; elseif"
             }
             let folder (elseBranch, writer) ifCond =
                 let nextElseBranch = allocator.AllocateLabel "else_if"
@@ -1044,8 +1092,10 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! writeIfCond mainCond elseBranch
             do! writerThatWritesAllIfs ()
             do! bprintfn $"%s{finalElseBranch}:"
+            do! bprintfn "; else"
             do! writeStatements elses endOfFunctionLabel
             do! bprintfn $"%s{endOfIfBranch}:"
+            do! bprintfn "; fi"
 
             yield! context
 
@@ -1056,6 +1106,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             let! newContext = getFromContext (fun c -> { c with NameTypeEnv = newNameTypeEnv; StackEnv = newStackEnv })
             let stepExpression = stepExpression |> Option.defaultValue (Expression.Constant (Value.Number (Number.Integer [| DecInt.One |])))
 
+            do! bprintfn $"; for %s{indexVariable} in %s{expr2str startExpression} .. %s{expr2str endExpression} .. %s{expr2str stepExpression} do"
             do! writeExpression startExpression
             do! checkWithContext newContext (writeExpressionAddress (Expression.Variable indexVariable))
             do! checkWithContext newContext (writeCopyFromStack { TypeId = TypeId.Int64; Source = source })
@@ -1081,6 +1132,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! checkWithContext newContext (writeCopyFromStack { TypeId = TypeId.Int64; Source = source })
             do! bprintfn $"jmp %s{compareIndexVarLabel}"
             do! bprintfn $"%s{endOfForLoopLabel}:"
+            do! bprintfn "; endfor"
 
             yield! context
 
@@ -1089,6 +1141,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             let startOfWhileLoop = allocator.AllocateLabel "while_start"
             let endOfWhileLoop = allocator.AllocateLabel "while_end"
 
+            do! bprintfn $"; while %s{expr2str condition} do"
             do! bprintfn $"%s{startOfWhileLoop}:"
             do! writeExpression condition
             do! bprintfn "pop rax"
@@ -1097,6 +1150,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! writeStatements body endOfFunctionLabel
             do! bprintfn $"jmp %s{startOfWhileLoop}"
             do! bprintfn $"%s{endOfWhileLoop}:"
+            do! bprintfn "; endwhile"
 
             yield! context
 
@@ -1107,17 +1161,20 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                 let! allocator = getFromContext (fun c -> c.Allocator)
                 let defer = allocator.AllocateDefer ()
 
+                do! bprintfn "; defer"
                 do! bprintfn $"mov rax, %s{nasmTrueConst}"
-                do! bprintfn $"mov qword [rbp%+d{defer.Offset}], rax ; Set defer to 'true'"
+                do! bprintfn $"mov qword [rbp%+d{defer.Offset}], rax"
                 let! newContext = getFromContext (fun c -> { c with StringBuilder = defer.Body })
                 do! checkWithContext newContext (writeStatements deferStatements endOfFunctionLabel)
                 yield! context
 
         | Statement.Return ->
+            do! bprintfn "; return"
             do! bprintfn $"jmp %s{endOfFunctionLabel}"
             yield! context
 
         | Statement.ReturnExpr expression ->
+            do! bprintfn $"; return %s{expr2str expression}"
             do! writeExpression expression
             do! bprintfn $"jmp %s{endOfFunctionLabel}"
             yield! context
@@ -1126,6 +1183,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             let! func = sourceContext (locateFunctionDecl name)
             let! size = sourceContext (getExpressionSize expression)
 
+            do! bprintfn $";%s{expr2str expression}"
             do! writeExpression expression
             match TypeId.isVoid func.Function.ReturnType with
             | true -> ()
