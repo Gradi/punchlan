@@ -17,11 +17,19 @@ open System.IO
 open FSharp.Reflection
 open System.Security.Cryptography
 
+type DeferBody =
+    { Body: StringBuilder
+      Offset: int<albytesize> }
+
 type StackAllocator () =
     let mutable totalBytesAllocated = 0<albytesize>
     let mutable labelCount = 0
 
+    let mutable defers = []
+
     member _.TotalBytesAllocated = totalBytesAllocated
+
+    member _.Defers = defers
 
     member _.AllocateVar (name: string) (size: int<albytesize>) (env: Map<string, int<albytesize>>) =
         totalBytesAllocated <- totalBytesAllocated + size
@@ -32,6 +40,13 @@ type StackAllocator () =
     member _.AllocateAnonymousVar (size: int<albytesize>) =
             totalBytesAllocated <- totalBytesAllocated + size
             -totalBytesAllocated
+
+    member this.AllocateDefer () =
+        let offset = this.AllocateAnonymousVar 8<albytesize>
+        let body = StringBuilder 8192
+        let defer = { DeferBody.Body = body; Offset = offset }
+        defers <- defers @ [ defer ]
+        defer
 
     member _.AllocateLabel suffix =
         let label = sprintf $"%%$lbl%d{labelCount}_%s{suffix}"
@@ -1097,8 +1112,18 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
             yield! context
 
-        | Statement.Defer _ ->
-            yield! sourceFuncContext (fatalDiag' "Defer statement support not implemented.")
+        | Statement.Defer deferStatements ->
+            match deferStatements with
+            | [] -> yield! context
+            | deferStatements ->
+                let! allocator = getFromContext (fun c -> c.Allocator)
+                let defer = allocator.AllocateDefer ()
+
+                do! bprintfn $"mov rax, %s{nasmTrueConst}"
+                do! bprintfn $"mov qword [rbp%+d{defer.Offset}], rax ; Set defer to 'true'"
+                let! newContext = getFromContext (fun c -> { c with StringBuilder = defer.Body })
+                do! checkWithContext newContext (writeStatements deferStatements endOfFunctionLabel)
+                yield! context
 
         | Statement.Return ->
             do! bprintfn $"jmp %s{endOfFunctionLabel}"
@@ -1184,9 +1209,30 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         fprintfn $"%s{funcLabel}:"
         fprintfn $"enter %d{stackAllocator.TotalBytesAllocated}, 0"
         fprintfn ";;; Body"
-        fprintfn $"%O{funcBodyStr}"
+
+        if not (List.isEmpty stackAllocator.Defers) then
+            fprintfn $"; Clear all defers (%d{List.length stackAllocator.Defers})"
+            fprintfn $"mov rax, %s{nasmFalseConst}"
+            for deferBody in stackAllocator.Defers do
+                fprintfn $"mov qword [rbp%+d{deferBody.Offset}], rax"
+            fprintfn "; End of clear all defers"
+
+        fprintf $"%O{funcBodyStr}"
         fprintfn ";;; End of body"
         fprintfn $" %s{endOfFunctionLabel}:"
+
+        if not (List.isEmpty stackAllocator.Defers) then
+            fprintfn $";;; Defers bodies go from here (%d{List.length stackAllocator.Defers})"
+            for index, deferBody in List.rev (List.indexed stackAllocator.Defers) do
+                let label = stackAllocator.AllocateLabel "defer_end"
+                fprintfn $"; Defer #%d{index}"
+                fprintfn $"mov rax, qword [rbp%+d{deferBody.Offset}]"
+                fprintfn $"cmp rax, %s{nasmFalseConst}"
+                fprintfn $"je %s{label}"
+                fprintf $"%O{deferBody.Body}"
+                fprintfn $"%s{label}:"
+                fprintfn $"; End of defer #%d{index}"
+
 
         let argsSizesAligned = argumentsInfo.Args |> List.sumBy (fun s -> align s.Size 8)
         match TypeId.isVoid func.ReturnType with
