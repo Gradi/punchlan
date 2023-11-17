@@ -406,10 +406,11 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
             do! writeExpressionAddress left
             do! writeExpression indexExpr
-            do! bprintfn "pop rbx"
             do! bprintfn "pop rax"
-            do! bprintfn $"mul rbx, rbx, %+d{size}"
-            do! bprintfn "lea rax, qword [rax+rbx]"
+            do! bprintfn "pop rbx"
+            do! bprintfn $"mov rcx, %+d{size}"
+            do! bprintfn "mul rcx"
+            do! bprintfn "lea rax, qword [rbx+rax]"
             do! bprintfn "push rax"
             do! writeCopyToStack { TypeId = arraySubitemType; Source = arrayType.Source }
 
@@ -963,12 +964,13 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             let! arraySubitemType = sourceContext (getArraySubitemType arrayType.TypeId)
             let! size = sourceContext (getTypeIdSize { TypeId = arraySubitemType; Source = arrayType.Source })
 
-            do! writeExpressionAddress array
+            do! writeExpression array
             do! writeExpression index
-            do! bprintfn "pop rbx"
             do! bprintfn "pop rax"
-            do! bprintfn $"mul rbx, rbx, %d{size}"
-            do! bprintfn "lea rax, byte [rax+rbx]"
+            do! bprintfn "pop rbx"
+            do! bprintfn $"mov rcx, %+d{size}"
+            do! bprintfn "mul rcx"
+            do! bprintfn "lea rax, byte [rbx+rax]"
             do! bprintfn "push rax"
 
         | Expression.Deref expression -> do! writeExpression expression
@@ -1070,6 +1072,11 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! bprintfn $"je %s{endOfForLoopLabel}"
             do! checkWithContext newContext (writeStatements body endOfFunctionLabel)
             do! checkWithContext newContext (writeExpression stepExpression)
+            do! checkWithContext newContext (writeExpression (Expression.Variable indexVariable))
+            do! bprintfn "pop rax"
+            do! bprintfn "pop rbx"
+            do! bprintfn "add rax, rbx"
+            do! bprintfn "push rax"
             do! checkWithContext newContext (writeExpressionAddress (Expression.Variable indexVariable))
             do! checkWithContext newContext (writeCopyFromStack { TypeId = TypeId.Int64; Source = source })
             do! bprintfn $"jmp %s{compareIndexVarLabel}"
