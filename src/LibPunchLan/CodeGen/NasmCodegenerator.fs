@@ -211,8 +211,9 @@ let writeCopyToStack (typ: TypeRef) : TypeCheckerM.M<NasmContext, unit> = tcheck
         do! bprintfn "movzx rax, word [rax]"
         do! bprintfn "push rax"
     | TypeId.Uint32 ->
-        do! bprintfn "movxz rax, dword [rax]"
-        do! bprintfn "push rax"
+        do! bprintfn "mov rbx, 0"
+        do! bprintfn "mov ebx, dword [rax]"
+        do! bprintfn "push rbx"
     | TypeId.Uint64 ->
         do! bprintfn "mov rax, qword [rax]"
         do! bprintfn "push rax"
@@ -1039,11 +1040,13 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                 (nextElseBranch, nextWriter)
 
             let elseBranch = allocator.AllocateLabel "else_if"
-            let _, writerThatWritesAllIfs =
+            let finalElseBranch, writerThatWritesAllIfs =
                 elseIfs |> List.fold folder (elseBranch, (fun () -> tchecker { yield () }))
 
             do! writeIfCond mainCond elseBranch
             do! writerThatWritesAllIfs ()
+            do! bprintfn $"%s{finalElseBranch}:"
+            do! writeStatements elses endOfFunctionLabel
             do! bprintfn $"%s{endOfIfBranch}:"
 
             yield! context

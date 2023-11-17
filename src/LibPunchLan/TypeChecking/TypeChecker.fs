@@ -181,9 +181,18 @@ let rec getExpressionType (expr: Expression) : TypeCheckerM.M<SourceContext, Typ
         | BinaryExpressionKind.Less
         | BinaryExpressionKind.LessOrEqual
         | BinaryExpressionKind.Greater
-        | BinaryExpressionKind.GreaterOrEqual ->
-            if not (TypeId.isBool leftTyp) then yield! diag $"Left boolean comparison argument must be of type bool, not \%O{leftTyp}"
-            if not (TypeId.isBool rightTyp) then yield! diag $"Right boolean comparison argument must be of type bool, not \%O{rightTyp}"
+        | BinaryExpressionKind.GreaterOrEqual as kind ->
+
+            if TypeId.isSigned leftTyp && TypeId.isSigned rightTyp then yield ()
+            elif TypeId.isUnsigned leftTyp && TypeId.isUnsigned rightTyp then yield ()
+            elif TypeId.isFloat leftTyp && TypeId.isFloat rightTyp then yield ()
+            elif TypeId.isPointer leftTyp && TypeId.isPointer rightTyp then yield ()
+            elif TypeId.isPointer leftTyp && TypeId.isUnsigned rightTyp then yield ()
+            elif TypeId.isUnsigned leftTyp && TypeId.isPointer rightTyp then yield ()
+            elif (kind = BinaryExpressionKind.Equal || kind = BinaryExpressionKind.NotEqual) &&
+                 TypeId.isBool leftTyp && TypeId.isBool rightTyp then yield ()
+            else
+                yield! fatalDiag $"Operation '%O{leftType}' ( = != < <= > >=) '%O{rightType}' is not supported."
 
             yield { TypeId = TypeId.Bool; Source = source }
 
