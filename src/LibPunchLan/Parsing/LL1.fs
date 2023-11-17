@@ -292,6 +292,11 @@ module private rec Expressions =
             do! consume Lexeme.RParen
             return Expression.Cast (typeid, expr)
 
+        | { Lexeme = Lexeme.LParen } ->
+            let! expr = parseExpression ()
+            do! consume Lexeme.RParen
+            return expr
+
         | input ->
             do! returnLex input
             return! parseError input "Expected expression start"
