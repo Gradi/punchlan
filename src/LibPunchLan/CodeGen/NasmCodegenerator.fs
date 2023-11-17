@@ -1120,7 +1120,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! bprintfn "pop rax"
             do! bprintfn "pop rbx"
             do! bprintfn "cmp rax, rbx"
-            do! bprintfn $"je %s{endOfForLoopLabel}"
+            do! bprintfn $"jge %s{endOfForLoopLabel}"
             do! checkWithContext newContext (writeStatements body endOfFunctionLabel)
             do! checkWithContext newContext (writeExpression stepExpression)
             do! checkWithContext newContext (writeExpression (Expression.Variable indexVariable))
