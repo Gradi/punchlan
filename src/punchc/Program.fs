@@ -66,7 +66,11 @@ let rec parseSources (filepath: string) (sourceFilename: string) (searchPaths: s
             let tokens = Lexer.tokenize (Lexer.indexedChars chars)
             use tokenReader = new SeqReader<Result<LexemeContainer, string>> (tokens)
 
-            let! source = LL1.parseSource sourceFilename tokenReader
+            let! source =
+                match LL1.parseSource sourceFilename tokenReader with
+                | Ok source -> Ok source
+                | Error msg -> Error (sprintf $"%s{filepath}: %s{msg}")
+
             parsedSources.Add source
 
             for sourceFilename in source.OpenDirectives |> Seq.ofList |> Seq.map (fun od -> od.Path) do
