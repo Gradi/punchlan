@@ -474,30 +474,83 @@ let checkSourceDeclarations () : TypeCheckerM.M<SourceContext, unit>  = tchecker
         | Declaration.Type typ -> yield! checkTypeDeclaration typ
 }
 
-let rec getTypeIdSize (typ: TypeRef) : TypeCheckerM.M<SourceContext, int<bytesize>> = tchecker {
+let rec getTypeIdAlignment (typ: TypeRef) :  TypeCheckerM.M<SourceContext, int> = tchecker {
     match TypeId.unwrapConst typ.TypeId with
-    | TypeId.Int8 | TypeId.Uint8 -> yield 1<bytesize>
-    | TypeId.Int16 | TypeId.Uint16 -> yield 2<bytesize>
-    | TypeId.Int32 | TypeId.Uint32 -> yield 4<bytesize>
-    | TypeId.Int64 | TypeId.Uint64 -> yield 8<bytesize>
-    | TypeId.Float -> yield 4<bytesize>
-    | TypeId.Double -> yield 8<bytesize>
-    | TypeId.Bool -> yield 8<bytesize>
-    | TypeId.Char -> yield 1<bytesize>
-    | TypeId.Void -> yield 0<bytesize>
-    | TypeId.Pointer _ -> yield 8<bytesize>
+    | TypeId.Int8 | TypeId.Uint8 -> yield 1
+    | TypeId.Int16 | TypeId.Uint16 -> yield 2
+    | TypeId.Int32 | TypeId.Uint32 -> yield 4
+    | TypeId.Int64 | TypeId.Uint64 -> yield 8
+    | TypeId.Float -> yield 4
+    | TypeId.Double -> yield 8
+    | TypeId.Bool -> yield 8
+    | TypeId.Char -> yield 1
+    | TypeId.Void -> yield 0
+    | TypeId.Pointer _ -> yield 8
+    | TypeId.Named typename ->
+        let! typeDecl = checkWithContext' (fun c -> { c with CurrentSource = typ.Source }) (locateTypeDecl typename)
+        let! fields = getTypeDeclFields typeDecl
+        match fields with
+        | [] -> yield 0
+        | fields ->
+            let biggestField = fields |> List.maxBy (fun f -> f.Size)
+            yield! getTypeIdAlignment biggestField.Type
+    | typeId -> yield failwithf $"Type id '%O{typeId}' should have been covered."
+}
+
+and getTypeIdSize (typ: TypeRef) : TypeCheckerM.M<SourceContext, int> = tchecker {
+    match TypeId.unwrapConst typ.TypeId with
+    | TypeId.Int8 | TypeId.Uint8 -> yield 1
+    | TypeId.Int16 | TypeId.Uint16 -> yield 2
+    | TypeId.Int32 | TypeId.Uint32 -> yield 4
+    | TypeId.Int64 | TypeId.Uint64 -> yield 8
+    | TypeId.Float -> yield 4
+    | TypeId.Double -> yield 8
+    | TypeId.Bool -> yield 8
+    | TypeId.Char -> yield 1
+    | TypeId.Void -> yield 0
+    | TypeId.Pointer _ -> yield 8
     | TypeId.Named name ->
         let! typeDecl = checkWithContext' (fun c -> { c with CurrentSource = typ.Source }) (locateTypeDecl name)
-        let! fieldSizes =
-            typeDecl.TypeDecl.Fields
-            |> List.map snd
-            |> List.map (fun t -> getTypeIdSize { TypeId = t; Source = typeDecl.Source })
-            |> unwrapList
+        let! fields = getTypeDeclFields typeDecl
+        match fields with
+        | [] -> yield 0
+        | fields ->
+            match typeDecl.TypeDecl.TypeType with
+            | TypeType.Struct ->
+                let lastField = fields |> List.last
+                let! alignment = getTypeIdAlignment typ
+                yield align (lastField.Offset + lastField.Size) alignment
+            | TypeType.Union ->
+                let biggestField = fields |> List.maxBy (fun f -> f.Size)
+                yield biggestField.Size
 
-        match typeDecl.TypeDecl.TypeType with
-        | TypeType.Struct -> yield fieldSizes |> List.sumBy (fun s -> align s 8) |> int |> LanguagePrimitives.Int32WithMeasure
-        | TypeType.Union -> yield align (List.max fieldSizes ) 8 |> int |> LanguagePrimitives.Int32WithMeasure
     | typ -> yield failwithf $"This type id should have been covered: %O{typ}"
+}
+
+and getTypeDeclFields (typeDecl: TypeDeclRef) : TypeCheckerM.M<SourceContext, FieldInfo list> = tchecker {
+    let folder prevStep (fieldName, fieldType) = (fun () -> tchecker {
+        let! offset, fields = prevStep ()
+        let typeRef = { TypeId = fieldType; Source = typeDecl.Source }
+        let! size = getTypeIdSize typeRef
+        let! alignment = getTypeIdAlignment typeRef
+        let offset = align offset (int alignment)
+        let fieldInfo =
+            { FieldInfo.TypeDecl = typeDecl
+              Type = typeRef
+              Name = fieldName
+              Size = size
+              Alignment = alignment
+              Offset = offset }
+        let nextOffset = offset + size
+        yield (nextOffset, fields @ [ fieldInfo ])
+    })
+
+    let folderResult =
+        typeDecl.TypeDecl.Fields
+        |> List.fold folder (fun () -> tchecker { yield (0, []) })
+
+    let! _, fields = folderResult ()
+    yield fields
 }
 
 let getExpressionSize expression = tchecker {

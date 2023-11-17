@@ -19,10 +19,10 @@ open System.Security.Cryptography
 
 type DeferBody =
     { Body: StringBuilder
-      Offset: int<albytesize> }
+      Offset: int }
 
 type StackAllocator () =
-    let mutable totalBytesAllocated = 0<albytesize>
+    let mutable totalBytesAllocated = 0
     let mutable labelCount = 0
 
     let mutable defers = []
@@ -31,18 +31,18 @@ type StackAllocator () =
 
     member _.Defers = defers
 
-    member _.AllocateVar (name: string) (size: int<albytesize>) (env: Map<string, int<albytesize>>) =
+    member _.AllocateVar (name: string) (size: int) (env: Map<string, int>) =
         totalBytesAllocated <- totalBytesAllocated + size
         assert (((int size) % 8) = 0)
         assert (((int totalBytesAllocated) % 8) = 0)
         Map.add name -totalBytesAllocated env
 
-    member _.AllocateAnonymousVar (size: int<albytesize>) =
+    member _.AllocateAnonymousVar (size: int) =
             totalBytesAllocated <- totalBytesAllocated + size
             -totalBytesAllocated
 
     member this.AllocateDefer () =
-        let offset = this.AllocateAnonymousVar 8<albytesize>
+        let offset = this.AllocateAnonymousVar 8
         let body = StringBuilder 8192
         let defer = { DeferBody.Body = body; Offset = offset }
         defers <- defers @ [ defer ]
@@ -58,7 +58,7 @@ type NasmContext =
       CurrentFunction: Function
       Program: Program
       NameTypeEnv: Lazy<Map<string, TypeRef>>
-      StackEnv: Map<string, int<albytesize>>
+      StackEnv: Map<string, int>
       Allocator: StackAllocator
       StringBuilder: StringBuilder }
 
@@ -73,23 +73,16 @@ type NasmContext =
           Program = this.Program
           NameTypeEnv = this.NameTypeEnv }
 
-type FieldInfo =
-    { TypeDecl: TypeDeclRef
-      Type: TypeRef
-      Name: string
-      Offset: int
-      Size: int<bytesize> }
-
 type IncomingArgInfo =
     { Index: int
       Name: string
       Type: TypeRef
-      Size: int<bytesize>
-      Offset: int<albytesize> }
+      Size: int
+      Offset: int }
 
 type FuncCallInfo =
     { Args: IncomingArgInfo list
-      ResultSize: int<bytesize>
+      ResultSize: int
       IsResultSizeFitsReg: bool
       IsFirstArgumentResultPtr: bool }
 
@@ -164,22 +157,10 @@ let string2nasm (str: string) =
 
 
 let getField (typ: TypeDeclRef) (name: string) : TypeCheckerM.M<NasmContext, FieldInfo> = tchecker {
-    let folder prev (fieldName, fieldType) : unit -> TypeCheckerM.M<NasmContext, int * FieldInfo list> = (fun () -> tchecker {
-        let! offset, xs = prev ()
-        let! size = checkWithContext' (fun c -> c.WithSource ()) (getTypeIdSize { TypeId = fieldType; Source = typ.Source })
-        let xs = xs @ [ { FieldInfo.TypeDecl = typ; Type = { TypeId = fieldType; Source = typ.Source }; Name = fieldName; Offset = offset; Size = size } ]
-        yield (offset + (int (align size 8)), xs)
-    })
-
-    let fields =
-        typ.TypeDecl.Fields
-        |> List.fold folder (fun () ->  tchecker { yield (0, []) })
-    let! _, fields = fields ()
-
-    match fields |> List.filter (fun f -> f.Name = name) with
-    | [] -> yield! checkWithContext' (fun c -> c.WithFunction ()) (fatalDiag' $"Can't find field named '%s{name}' in '%O{typ}'.")
-    | [ field ] -> yield field
-    | fields -> yield! checkWithContext' (fun c -> c.WithFunction ()) (fatalDiag' $"Found more than 1 (%d{List.length fields}) fields named '%s{name}' in '%O{typ}'.")
+    let! fields = sourceContext (getTypeDeclFields typ)
+    match fields |> List.tryFind (fun f -> f.Name = name) with
+    | Some field -> yield field
+    | None -> yield! sourceContext (fatalDiag $"Can't find field namde '%s{name}' in '%O{typ}'")
 }
 
 let getFuncCallInfo (func: Function) : TypeCheckerM.M<SourceContext, FuncCallInfo>  = tchecker {
@@ -191,15 +172,15 @@ let getFuncCallInfo (func: Function) : TypeCheckerM.M<SourceContext, FuncCallInf
         |> unwrapList
 
     let! returnSize = getTypeIdSize { TypeId = func.ReturnType; Source = source }
-    let returnSizeFitsReg = 1<bytesize> <= returnSize && returnSize <= 8<bytesize>
+    let returnSizeFitsReg = 1 <= returnSize && returnSize <= 8
     let isFirstArgResultPtr = not (TypeId.isVoid func.ReturnType) && not returnSizeFitsReg
-    let initialOffset = if isFirstArgResultPtr then 24<albytesize> else 16<albytesize>
+    let initialOffset = if isFirstArgResultPtr then 24 else 16
 
     let argumentInfo =
         List.indexed (List.zip func.Args argumentSizes)
         |> List.map (fun (index, ((argName, argType), argSize)) ->
             { IncomingArgInfo.Index = index; Name = argName; Type = { TypeId = argType; Source = source }
-              Size = argSize; Offset = 0<albytesize> })
+              Size = argSize; Offset = 0 })
 
     let _, argumentInfo =
         argumentInfo
@@ -348,7 +329,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         | Expression.FuncCall (name, args) ->
             let! func = sourceContext (locateFunctionDecl name)
             let! funcReturnSize = sourceContext (getTypeIdSize { TypeId = func.Function.ReturnType; Source = func.Source })
-            let funcReturnSizeFitsReg = 1<bytesize> <= funcReturnSize && funcReturnSize <= 8<bytesize>
+            let funcReturnSizeFitsReg = 1 <= funcReturnSize && funcReturnSize <= 8
             let! allocator = getFromContext (fun c -> c.Allocator)
             let resultPointerRequired = not (TypeId.isVoid func.Function.ReturnType) && not funcReturnSizeFitsReg
 
@@ -361,7 +342,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
                 let returnValuePtr = if resultPointerRequired
                                      then allocator.AllocateAnonymousVar (align funcReturnSize 8)
-                                     else 0<albytesize>
+                                     else 0
 
                 if resultPointerRequired then
                     do! bprintfn $"lea rax, qword [rbp-%d{returnValuePtr}]"
@@ -1068,7 +1049,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
         | Statement.For (indexVariable, startExpression, endExpression, stepExpression, body) ->
             let! source, allocator, stackEnv, nameTypeEnv = getFromContext (fun c -> (c.CurrentSource, c.Allocator, c.StackEnv, c.NameTypeEnv))
-            let newStackEnv = allocator.AllocateVar indexVariable 8<albytesize> stackEnv
+            let newStackEnv = allocator.AllocateVar indexVariable 8 stackEnv
             let newNameTypeEnv = lazy (Map.add indexVariable { TypeId = TypeId.Int64; Source = source } nameTypeEnv.Value)
             let! newContext = getFromContext (fun c -> { c with NameTypeEnv = newNameTypeEnv; StackEnv = newStackEnv })
             let stepExpression = stepExpression |> Option.defaultValue (Expression.Constant (Value.Number (Number.Integer [| DecInt.One |])))
@@ -1141,7 +1122,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             do! writeExpression expression
             match TypeId.isVoid func.Function.ReturnType with
             | true -> ()
-            | false when 1<bytesize> <= size && size <= 8<bytesize> ->
+            | false when 1 <= size && size <= 8 ->
                 do! bprintfn "mov rax, 0"
             | false -> ()
 
@@ -1275,8 +1256,8 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             |> List.map (fun t -> getTypeIdSize { TypeId = t; Source = source })
             |> unwrapList
 
-        let copyRegArg reg (offset: int<albytesize>) (argSize: int<bytesize>) = (fun () ->
-            match int argSize with
+        let copyRegArg reg (offset: int) (argSize: int) = (fun () ->
+            match argSize with
             | 0 -> failwith "Can't copy argument of size 0."
             | 1 ->
                 fprintfn $"mov rax, %s{reg}"
@@ -1299,10 +1280,10 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                 fprintfn $"push %s{reg}"
                 fprintfn "memcopy")
 
-        let copyFloatArg reg (offset: int<albytesize>) = (fun () ->
+        let copyFloatArg reg (offset: int) = (fun () ->
             fprintfn $"movsd qword [rsp%+d{offset}], %s{reg}")
 
-        let copyStackArg index (offset: int<albytesize>) (argSize: int<bytesize>) = (fun () ->
+        let copyStackArg index (offset: int) (argSize: int) = (fun () ->
             match int argSize with
             | 0 -> failwith "Can't copy argument of size 0"
             | 1 ->
@@ -1329,7 +1310,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                 fprintfn "push rax"
                 fprintfn "memcopy")
 
-        let copyArgsFromMsX64ToStack (offset, writer: unit -> unit) (argIndex, argType, argSize: int<bytesize>) =
+        let copyArgsFromMsX64ToStack (offset, writer: unit -> unit) (argIndex, argType, argSize: int) =
             let newWriter =
                 match argIndex with
                 | 0 when TypeId.isFloat argType -> copyFloatArg "xmm0" offset
@@ -1345,9 +1326,9 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             (offset, writer >> newWriter)
 
         let! funcReturnSize = getTypeIdSize { TypeId = func.ReturnType; Source = source }
-        let returnSizeFitsReg = List.contains funcReturnSize [ 0<bytesize>; 1<bytesize>; 2<bytesize>; 4<bytesize>; 8<bytesize> ]
+        let returnSizeFitsReg = List.contains funcReturnSize [ 0; 1; 2; 4; 8 ]
         let firstArgIsResultPtr = not returnSizeFitsReg
-        let dedicatedArgumentForNativeResultRequired = not (TypeId.isVoid func.ReturnType) && funcReturnSize > 8<bytesize>
+        let dedicatedArgumentForNativeResultRequired = not (TypeId.isVoid func.ReturnType) && funcReturnSize > 8
 
         let arguments =
             List.indexed (List.zip (func.Args |> List.map snd) argsSizes)
@@ -1356,9 +1337,9 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                             arguments |> List.map (fun (index, argType, argSize) -> (index + 1, argType, argSize))
                         else arguments
 
-        let (memoryToAllocate: int<albytesize>), argsToStackCopy =
-            arguments |> List.fold copyArgsFromMsX64ToStack (0<albytesize>, (fun () -> ()))
-        let memoryToAllocate = memoryToAllocate + 8<albytesize> + (align funcReturnSize 8)
+        let (memoryToAllocate: int), argsToStackCopy =
+            arguments |> List.fold copyArgsFromMsX64ToStack (0, (fun () -> ()))
+        let memoryToAllocate = memoryToAllocate + 8 + (align funcReturnSize 8)
 
         fprintfn $";;; Export wrapper for '%s{func.Name}' function"
         fprintfn "%%push"
@@ -1372,7 +1353,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         argsToStackCopy ()
 
         if dedicatedArgumentForNativeResultRequired then
-            fprintfn $"lea rax, qword [rbp-%d{(align funcReturnSize 8) + 8<albytesize>}]"
+            fprintfn $"lea rax, qword [rbp-%d{(align funcReturnSize 8) + 8}]"
             fprintfn "push rax"
 
         fprintfn $"call %s{getLabel' func.Name source}"
@@ -1382,7 +1363,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             fprintfn "mov rax, 0"
             fprintfn "leave"
             fprintfn "ret"
-        | false when 1<bytesize> <= funcReturnSize && funcReturnSize <= 8<bytesize> ->
+        | false when 1 <= funcReturnSize && funcReturnSize <= 8 ->
             match int funcReturnSize with
             | 0 -> failwith "Return size can't be 0 here."
             | _ when TypeId.isFloat func.ReturnType ->
@@ -1404,7 +1385,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             fprintfn $"push %d{funcReturnSize}"
             fprintfn "mov rax, qword [rbp-8]"
             fprintfn "push rax"
-            fprintfn $"lea rax, qword[rbp-%d{(align funcReturnSize 8) + 8<albytesize>}]"
+            fprintfn $"lea rax, qword[rbp-%d{(align funcReturnSize 8) + 8}]"
             fprintfn "push rax"
             fprintfn "memcopy"
             fprintfn "mov rax, 0"
@@ -1417,14 +1398,14 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
     let writeExternWrapperMicrosoftX64 (func: Function) : TypeCheckerM.M<SourceContext, unit> = tchecker {
         let! source = getFromContext (fun c -> c.CurrentSource)
         let! argumentsInfo = getFuncCallInfo func
-        let rcxOffset = -8<albytesize>
-        let rdxOffset = -16<albytesize>
-        let r8Offset = -24<albytesize>
-        let r9Offset = -32<albytesize>
-        let returnPtrOffset = (-(align argumentsInfo.ResultSize 8)) - 32<albytesize>
+        let rcxOffset = -8
+        let rdxOffset = -16
+        let r8Offset = -24
+        let r9Offset = -32
+        let returnPtrOffset = (-(align argumentsInfo.ResultSize 8)) - 32
 
-        let copyArgumentToRegister (regOffset: int<albytesize>) (arg: IncomingArgInfo) =
-            match int arg.Size with
+        let copyArgumentToRegister (regOffset: int) (arg: IncomingArgInfo) =
+            match arg.Size with
             | 0 -> failwithf $"Argument can't have size 0: %A{arg}"
             | 1 | 2 | 4 | 8 -> (fun () ->
                 fprintfn $"mov rax, qword [rbp%+d{arg.Offset}]"
@@ -1433,17 +1414,17 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                     fprintfn $"lea, rax qword [rbp%+d{arg.Offset}]"
                     fprintfn $"mov qword [rbp%+d{regOffset}], rax")
 
-        let copyArgumentToStack (stackOffset: int<albytesize>) (arg:IncomingArgInfo) =
+        let copyArgumentToStack (stackOffset: int) (arg:IncomingArgInfo) =
             match int arg.Size with
             | 0 -> failwithf $"Argument can't have size 0: %A{arg}"
             | 1 | 2 | 4 | 8 -> (stackOffset + (align arg.Size 8), (fun () ->
                 fprintfn $"mov rax, qword [rbp%+d{arg.Offset}]"
                 fprintfn $"mov qword [rsp%+d{stackOffset}], rax"))
-            | _ -> (stackOffset + 8<albytesize>, (fun () ->
+            | _ -> (stackOffset + 8, (fun () ->
                 fprintfn $"lea rax, qword [rbp%+d{arg.Offset}]"
                 fprintfn $"mov qword [rsp%+d{stackOffset}], rax"))
 
-        let mapNativeArgumentIndexToExternIndex (stackOffset: int<albytesize>) (arg: IncomingArgInfo) =
+        let mapNativeArgumentIndexToExternIndex (stackOffset: int) (arg: IncomingArgInfo) =
                 match arg.Index with
                 | 0 when TypeId.isFloat arg.Type.TypeId -> (stackOffset, (fun () -> fprintfn $"movsd xmm0, qword [rbp%+d{arg.Offset}]"))
                 | 0 -> (stackOffset, copyArgumentToRegister rcxOffset arg)
@@ -1464,8 +1445,8 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             arguments
             |> List.fold (fun (offset, writer) arg ->
                 let newOffset, newWriter = mapNativeArgumentIndexToExternIndex offset arg
-                (newOffset, writer >> newWriter)) (0<albytesize>, (fun () -> ()))
-        let memoryToAllocate = offset + 32<albytesize> + (align argumentsInfo.ResultSize 8)
+                (newOffset, writer >> newWriter)) (0, (fun () -> ()))
+        let memoryToAllocate = offset + 32 + (align argumentsInfo.ResultSize 8)
 
         let label = getLabel' func.Name source
         fprintfn $";;; Extern wrapper for func '%s{func.Name}'"
@@ -1494,7 +1475,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         fprintfn "add rsp, 32"
 
         let argumentsSum = arguments |> List.sumBy (fun s -> align s.Size 8)
-        let argumentsSum = argumentsSum + if argumentsInfo.IsFirstArgumentResultPtr then 8<albytesize> else 0<albytesize>
+        let argumentsSum = argumentsSum + if argumentsInfo.IsFirstArgumentResultPtr then 8 else 0
 
         match int argumentsInfo.ResultSize with
         | 0 ->
@@ -1558,7 +1539,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             | CallingConvention.SysVX64 -> failwith "Calling convention 'System V ABI x64' to be implemented."
     }
 
-    let rec writeVariableExpression (expression: Expression) (size: int<bytesize>) : TypeCheckerM.M<SourceContext, unit> = tchecker {
+    let rec writeVariableExpression (expression: Expression) (size: int) : TypeCheckerM.M<SourceContext, unit> = tchecker {
         let writePrefix () =
             match int size with
             | 1 -> fprintf "db "

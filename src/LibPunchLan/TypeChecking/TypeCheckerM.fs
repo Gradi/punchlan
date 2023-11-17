@@ -49,6 +49,14 @@ type TypeCheckerCE () =
 
         result)
 
+type FieldInfo =
+    { TypeDecl: TypeDeclRef
+      Type: TypeRef
+      Name: string
+      Alignment: int
+      Size: int
+      Offset: int }
+
 let tchecker = TypeCheckerCE ()
 
 let diag msg (context: SourceContext) =
