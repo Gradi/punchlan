@@ -104,27 +104,35 @@ module private rec Expressions =
 
     let parseExpr1 () = parser {
         let rec doParse left = parser {
-            match! next with
-            | { Lexeme = Lexeme.LABracket } ->
+            let! next1 = next
+            let! next2 = next
+
+            match next1.Lexeme, next2.Lexeme with
+            | Lexeme.LABracket, Lexeme.Equal ->
+                let! right = parseExpr2 ()
+                return (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.LessOrEqual })
+            |  Lexeme.RABracket, Lexeme.Equal ->
+                let! right = parseExpr2 ()
+                return (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.GreaterOrEqual })
+            | Lexeme.LABracket, _ ->
+                do! returnLex next2
                 let! right = parseExpr2 ()
                 return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.Less })
-            | { Lexeme = Lexeme.LessThanOrEqual } ->
-                let! right = parseExpr2 ()
-                return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.LessOrEqual })
-            | { Lexeme = Lexeme.DEqual } ->
-                let! right = parseExpr2 ()
-                return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.Equal })
-            | { Lexeme = Lexeme.RABracket } ->
+            | Lexeme.RABracket, _ ->
+                do! returnLex next2
                 let! right = parseExpr2 ()
                 return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.Greater })
-            | { Lexeme = Lexeme.GreaterThanOrEqual } ->
+            | Lexeme.DEqual, _ ->
+                do! returnLex next2
                 let! right = parseExpr2 ()
-                return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.GreaterOrEqual })
-            | { Lexeme = Lexeme.NotEqual } ->
+                return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.Equal })
+            |  Lexeme.NotEqual, _ ->
+                do! returnLex next2
                 let! right = parseExpr2 ()
                 return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.NotEqual })
-            | input ->
-                do! returnLex input
+            | _ ->
+                do! returnLex next2
+                do! returnLex next1
                 return left
         }
 
@@ -134,18 +142,22 @@ module private rec Expressions =
 
     let parseExpr2 () = parser {
         let rec doParse left = parser {
-            match! next with
-            | { Lexeme = Lexeme.Keyword Keyword.Xor } ->
+            let! next1 = next
+            let! next2 = next
+            match next1.Lexeme, next2.Lexeme with
+            | Lexeme.Keyword Keyword.Xor, _ ->
+                do! returnLex next2
                 let! right = parseExpr3 ()
                 return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.Xor })
-            | { Lexeme = Lexeme.Operator ">>" } ->
+            | Lexeme.RABracket, Lexeme.RABracket ->
                 let! right = parseExpr3 ()
                 return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.RShift })
-            | { Lexeme = Lexeme.Operator "<<" } ->
+            | Lexeme.LABracket, Lexeme.LABracket ->
                 let! right = parseExpr3 ()
                 return! doParse (Expression.BinaryExpression { BinaryExpression.Left = left; Right = right; Kind = BinaryExpressionKind.LShift })
-            | input ->
-                do! returnLex input
+            | _ ->
+                do! returnLex next2
+                do! returnLex next1
                 return left
         }
 

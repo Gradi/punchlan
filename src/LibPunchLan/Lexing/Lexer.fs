@@ -76,9 +76,10 @@ let private initialState (char: Char option) (state: LexerState) =
 
     | Some ({ Char = '.' } as char) -> stateNone { (stateAddChar char state) with State = dotSymbolState }
 
-    | Some ({ Char = '<' } as char)
+    | Some ({ Char = '<' } as char) -> stateOk state Lexeme.LABracket char
+    | Some ({ Char = '>' } as char) -> stateOk state Lexeme.RABracket char
+
     | Some ({ Char = '=' } as char)
-    | Some ({ Char = '>' } as char)
     | Some ({ Char = '!' } as char) -> stateNone { (stateAddChar char state) with State = equalNotEqualState }
 
     | Some { Char = ' ' }
@@ -185,12 +186,6 @@ let private equalNotEqualState (char: Char option) (state: LexerState) =
             let str = charsToStr xs
             let lexeme =
                 match str with
-                | "<" -> Some Lexeme.LABracket
-                | "<<" -> Some <| Lexeme.Operator "<<"
-                | "<=" -> Some Lexeme.LessThanOrEqual
-                | ">" -> Some Lexeme.RABracket
-                | ">>" -> Some <| Lexeme.Operator ">>"
-                | ">=" -> Some Lexeme.GreaterThanOrEqual
                 | "=" -> Some Lexeme.Equal
                 | "==" -> Some Lexeme.DEqual
                 | "!=" -> Some Lexeme.NotEqual
@@ -202,9 +197,7 @@ let private equalNotEqualState (char: Char option) (state: LexerState) =
 
     match char with
     | None -> emit state
-    | Some ({ Char = '<' } as char)
     | Some ({ Char = '=' } as char)
-    | Some ({ Char = '>' } as char)
     | Some ({ Char = '!' } as char) -> stateNone (stateAddChar char state)
     | Some char -> emit (stateReturnChar char state)
 
