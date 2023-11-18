@@ -1467,7 +1467,8 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         let rdxOffset = -16
         let r8Offset = -24
         let r9Offset = -32
-        let returnPtrOffset = (-(align argumentsInfo.ResultSize 8)) - 32
+        let rspOffset = -40
+        let returnPtrOffset = (-(align argumentsInfo.ResultSize 8)) - 40
 
         let copyArgumentToRegister (regOffset: int) (arg: IncomingArgInfo) =
             match arg.Size with
@@ -1525,6 +1526,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         fprintfn $"mov qword [rbp%+d{rcxOffset}], rax"
         fprintfn $"mov qword [rbp%+d{r8Offset}], rax"
         fprintfn $"mov qword [rbp%+d{r9Offset}], rax"
+        fprintfn $"mov qword [rbp%+d{rspOffset}], rax"
         argumentWriter ()
 
         if isImplicitReturnPtrRequired then
@@ -1535,9 +1537,14 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         fprintfn $"mov rdx, qword [rbp%+d{rdxOffset}]"
         fprintfn $"mov r8, qword [rbp%+d{r8Offset}]"
         fprintfn $"mov r9, qword [rbp%+d{r9Offset}]"
+        fprintfn "sub rsp, 16"
+        fprintfn $"mov qword [rbp%+d{rspOffset}], rsp"
+        fprintfn "and rsp, -16; Align stack to 16 byte boundary"
         fprintfn "sub rsp, 32"
         fprintfn $"call %s{func.Name}"
         fprintfn "add rsp, 32"
+        fprintfn $"mov rsp, qword [rbp%+d{rspOffset}]"
+        fprintfn "add rsp, 16"
 
         let argumentsSum = arguments |> List.sumBy (fun s -> align s.Size 8)
         let argumentsSum = argumentsSum + if argumentsInfo.IsFirstArgumentResultPtr then 8 else 0
