@@ -446,7 +446,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             let! arraySubitemType = sourceContext (getArraySubitemType arrayType.TypeId)
             let! size = sourceContext (getTypeIdSize { TypeId = arraySubitemType; Source = arrayType.Source })
 
-            do! writeExpressionAddress left
+            do! writeExpression left
             do! writeExpression indexExpr
             do! bprintfn "pop rax"
             do! bprintfn "pop rbx"
