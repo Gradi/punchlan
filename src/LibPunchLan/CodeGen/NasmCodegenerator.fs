@@ -133,7 +133,7 @@ let number2nasm (number: Number) =
         sprintf $"%s{sign}%s{str}d"
     | Number.HexInteger hexInts ->
         let str = hexInts |> Array.map NumberMod.hexIntToStr |> String.concat ""
-        sprintf $"%s{sign}%s{str}h"
+        sprintf $"0%s{sign}%s{str}h"
     | Number.BinaryInteger binInts ->
         let str = binInts |> Array.map NumberMod.bitIntToStr |> String.concat ""
         sprintf $"%s{sign}%s{str}b"
@@ -1523,7 +1523,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         fprintfn $"enter %d{memoryToAllocate}, 0"
         fprintfn "mov rax, 0"
         fprintfn $"mov qword [rbp%+d{rcxOffset}], rax"
-        fprintfn $"mov qword [rbp%+d{rcxOffset}], rax"
+        fprintfn $"mov qword [rbp%+d{rdxOffset}], rax"
         fprintfn $"mov qword [rbp%+d{r8Offset}], rax"
         fprintfn $"mov qword [rbp%+d{r9Offset}], rax"
         fprintfn $"mov qword [rbp%+d{rspOffset}], rax"
