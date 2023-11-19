@@ -64,6 +64,7 @@ let private initialState (char: Char option) (state: LexerState) =
     | Some ({ Char = '*' } as char) -> stateOk state (Lexeme.Operator "*") char
     | Some ({ Char = '/' } as char) -> stateOk state (Lexeme.Operator "/") char
     | Some ({ Char = '&' } as char) -> stateOk state (Lexeme.Operator "&") char
+    | Some ({ Char = '~' } as char) -> stateOk state (Lexeme.Operator "~") char
 
     | Some ({ Char = '\"' } as char) -> stateNone { (stateAddChar char state) with State = stringLiteralState }
     | Some ({ Char = '\'' } as char) -> stateNone { (stateAddChar char state) with State = charLiteralState }
