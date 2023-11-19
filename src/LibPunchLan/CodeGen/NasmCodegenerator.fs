@@ -1722,7 +1722,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             fprintfn $";;; bss (Unitialized) varaibles (%d{List.length bssVars})"
             fprintfn "section .bss align=16"
             for variable in bssVars do
-                do! writeVariable variable (fun b -> sprintf $"align %d{b},resb 0") (fun b -> sprintf $"times %d{b} resb 0")
+                do! writeVariable variable (fun b -> sprintf $"align %d{b},resb 1") (fun b -> sprintf $"times %d{b} resb 1")
                 fprintf "\n"
     }
 
