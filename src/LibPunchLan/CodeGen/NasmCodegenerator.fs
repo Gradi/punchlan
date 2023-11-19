@@ -1402,7 +1402,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                             arguments |> List.map (fun (index, argType, argSize) -> (index + 1, argType, argSize))
                         else arguments
 
-        let (memoryToAllocate: int), argsToStackCopy =
+        let memoryToAllocate, argsToStackCopy =
             arguments |> List.fold copyArgsFromMsX64ToStack (0, (fun () -> ()))
         let memoryToAllocate = memoryToAllocate + 8 + (align funcReturnSize 8)
 
