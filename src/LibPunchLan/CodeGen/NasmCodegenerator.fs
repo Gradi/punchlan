@@ -933,9 +933,9 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             if TypeId.isIntegerType leftType && TypeId.isIntegerType rightType then
                 do! writeExpression right
                 do! writeExpression left
+                do! bprintfn "pop rcx"
                 do! bprintfn "pop rax"
-                do! bprintfn "pop rbx"
-                do! bprintfn "shr rax, rbx"
+                do! bprintfn "shr rax, cl"
                 do! bprintfn "push rax"
 
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' >> '%O{rightType}' should have been covered.")
@@ -945,9 +945,9 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             if TypeId.isIntegerType leftType && TypeId.isIntegerType rightType then
                 do! writeExpression right
                 do! writeExpression left
+                do! bprintfn "pop rcx"
                 do! bprintfn "pop rax"
-                do! bprintfn "pop rbx"
-                do! bprintfn "shl rax, rbx"
+                do! bprintfn "shl rax, cl"
                 do! bprintfn "push rax"
 
             else yield! sourceFuncContext (fatalDiag' $"Operation '%O{leftType}' << '%O{rightType}' should have been covered.")
