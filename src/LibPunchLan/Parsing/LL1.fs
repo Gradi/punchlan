@@ -367,6 +367,8 @@ module private rec Expressions =
         | Lexeme.Keyword Keyword.False
         | Lexeme.Identifier _
         | Lexeme.Operator "-"
+        | Lexeme.LParen
+        | Lexeme.Keyword Keyword.Cast
         | Lexeme.Keyword Keyword.Deref -> true
         | _ -> false
 
