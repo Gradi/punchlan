@@ -934,8 +934,8 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             if TypeId.isIntegerType leftType && TypeId.isIntegerType rightType then
                 do! writeExpression right
                 do! writeExpression left
-                do! bprintfn "pop rcx"
                 do! bprintfn "pop rax"
+                do! bprintfn "pop rcx"
                 do! bprintfn "shr rax, cl"
                 do! bprintfn "push rax"
 
@@ -946,8 +946,8 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             if TypeId.isIntegerType leftType && TypeId.isIntegerType rightType then
                 do! writeExpression right
                 do! writeExpression left
-                do! bprintfn "pop rcx"
                 do! bprintfn "pop rax"
+                do! bprintfn "pop rcx"
                 do! bprintfn "shl rax, cl"
                 do! bprintfn "push rax"
 
