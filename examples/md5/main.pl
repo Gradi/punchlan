@@ -6,10 +6,10 @@ open  libc/stdlib
 var shifts : pointer<uint32>
 var Ks : pointer<uint32>
 
-var A : uint32 
-var B : uint32 
-var C : uint32 
-var D : uint32 
+var A : uint32
+var B : uint32
+var C : uint32
+var D : uint32
 
 export func main (argc: int32, argv: pointer<const pointer<const char>>) : int32
     if argc != 2 then
@@ -52,12 +52,12 @@ export func main (argc: int32, argv: pointer<const pointer<const char>>) : int32
 
     totalSize = totalSize + readSize
     var originalSize : uint64 = totalSize * cast(uint64, 8)
-    
+
     buffer[cast(int64, readSize)] = cast(uint8, 0x80)
     readSize = readSize + cast(uint64, 1)
     totalSize = totalSize + cast(uint64, 1)
 
-    while readSize < cast(uint64, 56) do
+    while mod(totalSize, cast(uint32, 64)) != cast(uint64, 56) do
         if readSize == cast(uint64, 64) then
             processChunk (buffer)
             readSize = cast(uint64, 0)
@@ -67,10 +67,6 @@ export func main (argc: int32, argv: pointer<const pointer<const char>>) : int32
             totalSize = totalSize + cast(uint64, 1)
         fi
     endwhile
-
-    if readSize != cast(uint64, 56) then
-        panic ("Assertion #1 failed")
-    fi
 
     cast(pointer<uint64>,buffer)[7] = originalSize
     processChunk (buffer)
@@ -127,7 +123,7 @@ func processChunk(buffer: pointer<uint8>)
     D = D + d
 endfunc
 
-func initKs () 
+func initKs ()
     Ks = cast(pointer<uint32>, getmem(sizeof(uint32) * cast(uint64, 64)))
     for i in 0 .. 64 do
         var di: double = cast(double, i)
@@ -223,7 +219,7 @@ func printHexNumber(number: uint32)
     endfor
 endfunc
 
-func leftrotate(value: uint32, times: uint32) : uint32 
+func leftrotate(value: uint32, times: uint32) : uint32
     return ((value << times) or (value >> (cast(uint32, 32) - times)))
 endfunc
 

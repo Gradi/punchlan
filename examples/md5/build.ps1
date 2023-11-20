@@ -13,7 +13,7 @@ rmfile .\md5.pdb
 
 punchc -f main.pl -o md5.asm
 
-nasm -w+all -g -f win64 -o md5.obj main.asm
+nasm -w+all -g -f win64 -o md5.obj md5.asm
 
 link /DEBUG `
      /ENTRY:mainCRTStartup `
