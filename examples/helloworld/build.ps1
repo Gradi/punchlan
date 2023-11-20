@@ -5,24 +5,24 @@ function rmfile($filename) {
 }
 
 # Clean stuff
-rmfile .\md5.exe
-rmfile .\md5.obj
-rmfile .\md5.asm
-rmfile .\md5.ilk
-rmfile .\md5.pdb
+rmfile .\hw.exe
+rmfile .\hw.obj
+rmfile .\hw.asm
+rmfile .\hw.ilk
+rmfile .\hw.pdb
 
-punchc -f main.pl -o md5.asm
+punchc -f main.pl -o hw.asm
 
-nasm -w+all -g -f win64 -o md5.obj md5.asm
+nasm -w+all -g -f win64 -o hw.obj hw.asm
 
 link /DEBUG `
      /ENTRY:mainCRTStartup `
      /MACHINE:x64 `
      /NOLOGO `
-     /PDB:md5.pdb `
+     /PDB:hw.pdb `
      /SUBSYSTEM:CONSOLE `
      /NODEFAULTLIB `
      /DYNAMICBASE:NO `
      /LARGEADDRESSAWARE `
-     md5.obj libucrtd.lib libvcruntimed.lib libcmtd.lib kernel32.lib
+     hw.obj libucrtd.lib libvcruntimed.lib libcmtd.lib kernel32.lib
 
