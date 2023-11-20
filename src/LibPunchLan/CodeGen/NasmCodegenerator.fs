@@ -1334,7 +1334,8 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                 fprintfn $"mov qword [rsp%+d{offset}], rax"
             | 4 ->
                 fprintfn $"mov rax, %s{reg}"
-                fprintfn "and rax, 0ffffffffh"
+                fprintfn "mov rbx, 0ffffffffh"
+                fprintfn "and rax, rbx"
                 fprintfn $"mov qword [rsp%+d{offset}], rax"
             | 8 ->
                 fprintfn $"mov qword [rsp%+d{offset}], %s{reg}"
