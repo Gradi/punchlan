@@ -24,7 +24,7 @@ open punch
 ```
 - Aliased
 ```
-open libs/stdio as coolAliasName
+open libc/stdio as coolAliasName
 open something as somethingElse
 ```
 
@@ -34,13 +34,13 @@ For example, consider following file structure tree:
 ```
 punch.pl
     libc/stdio.pl
-    libs/stdlib.pl
+    libc/stdlib.pl
 ```
 
 Then:
 
 - `open punch` references `./punch.pl` file;
-- `open libs/stdio.pl` references `./libc/stdlib.pl` file;
+- `open libc/stdio.pl` references `./libc/stdlib.pl` file;
 
 Standard library is located at the same location where `punchc` is located, in subdirectory named `stdlibrary`.
 Thus, if file is not found in current working directory, compiler will look for it in `<punchc_location>/stdlibrary`.
@@ -84,7 +84,8 @@ If return type is omitted, it defaults to `void` (eg. function returns nothing)
 #### Statements
 
 ```
-STATEMENTS = STATEMENT NEWLINE
+STATEMENTS = STATEMENT NEWLINE STATEMENTS
+STATEMENTS =
 
 STATEMENT = IDENTIFIER ':' TYPEID [ '=' EXPRESSION ] //  Variable declaration
 STATEMENT = IDENTIFIER '=' EXPRESSION // Variable assignment

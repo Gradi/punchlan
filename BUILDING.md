@@ -10,8 +10,8 @@ You will need:
 
 1. Clone this repository;
 2. `cd` into it;
-3. `cd src`
-4. Run command
+3. `cd src`;
+4. Run command;
 ```
     dotnet build Punchlan.sln -c Debug -p:Platform=x64
 ```

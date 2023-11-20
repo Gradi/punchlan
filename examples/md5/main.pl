@@ -1,7 +1,7 @@
 open punch
 open libc/math
 open libc/stdio
-open  libc/stdlib
+open libc/stdlib
 
 var shifts : pointer<uint32>
 var Ks : pointer<uint32>
