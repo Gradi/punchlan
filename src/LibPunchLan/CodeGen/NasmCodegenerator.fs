@@ -638,6 +638,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
             elif TypeId.isUnsigned leftType && TypeId.isUnsigned rightType then
                 do! bprintfn "pop rax"
                 do! bprintfn "pop rbx"
+                do! bprintfn "mov rdx, 0"
                 do! bprintfn "div rbx"
                 do! bprintfn "push rax"
 
