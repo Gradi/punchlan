@@ -1,28 +1,109 @@
+$ErrorActionPreference='Stop'
+$PSNativeCommandUseErrorActionPreference=$true
+
 function rmfile($filename) {
     if (Test-Path $filename -PathType Leaf) {
         rm $filename
     }
 }
 
-# Clean stuff
-rmfile .\hw.exe
-rmfile .\hw.obj
-rmfile .\hw.asm
-rmfile .\hw.ilk
-rmfile .\hw.pdb
+function deldir($dirname) {
+    if (Test-Path $dirname -PathType Container) {
+        rm -Force -Recurse $dirname
+    }
+}
 
-punchc -f main.pl -o hw.asm
+function link_debug {
+    Param
+    (
+        [string[]]$objects,
+        [string]$pdb,
+        [string]$out
+    )
 
-nasm -w+all -g -f win64 -o hw.obj hw.asm
+    link /DEBUG `
+         /ENTRY:mainCRTStartup `
+         /MACHINE:x64 `
+         /NOLOGO `
+         /PDB:$pdb `
+         /SUBSYSTEM:CONSOLE `
+         /INCREMENTAL:NO `
+         /NODEFAULTLIB `
+         /DYNAMICBASE:NO `
+         /LARGEADDRESSAWARE `
+         /OUT:$out `
+         @objects
+}
 
-link /DEBUG `
-     /ENTRY:mainCRTStartup `
-     /MACHINE:x64 `
-     /NOLOGO `
-     /PDB:hw.pdb `
-     /SUBSYSTEM:CONSOLE `
-     /NODEFAULTLIB `
-     /DYNAMICBASE:NO `
-     /LARGEADDRESSAWARE `
-     hw.obj libucrtd.lib libvcruntimed.lib libcmtd.lib kernel32.lib
+function link_release {
+    Param
+    (
+        [string[]]$objects,
+        [string]$out
+    )
+
+    link /ENTRY:mainCRTStartup `
+         /MACHINE:x64 `
+         /NOLOGO `
+         /SUBSYSTEM:CONSOLE `
+         /INCREMENTAL:NO `
+         /NODEFAULTLIB `
+         /DYNAMICBASE:NO `
+         /LARGEADDRESSAWARE `
+         /OUT:$out `
+         @objects
+}
+
+function checkecode {
+    $code=$LASTEXITCODE
+    if ($code -ne 0) {
+        Write-Error "Last command failed."
+    }
+}
+
+echo 'Cleaning stuff'
+deldir .\objs\
+rmfile .\hw_nasm_debug.exe
+rmfile .\hw_nasm_release.exe
+rmfile .\hw_llvm_debug.exe
+rmfile .\hw_llvm_release.exe
+
+echo 'mkdir objs'
+mkdir .\objs
+
+echo 'Compiling'
+punchc --backend nasm -f .\main.pl -o .\objs\hw_nasm.asm
+checkecode
+punchc --backend llvm -f .\main.pl -o .\objs\hw_llvm_debug.ll
+checkecode
+
+echo 'Running NASM'
+nasm -w+all -g -f win64 -o .\objs\hw_nasm.obj .\objs\hw_nasm.asm
+checkecode
+
+echo 'Linking NASM version'
+link_debug -pdb .\objs\hw_nasm_debug.pdb -out hw_nasm_debug.exe -objects .\objs\hw_nasm.obj,libucrtd.lib,libvcruntimed.lib,libcmtd.lib,kernel32.lib
+checkecode
+link_release -out hw_nasm_release.exe -objects .\objs\hw_nasm.obj,libucrt.lib,libvcruntime.lib,libcmt.lib,kernel32.lib
+checkecode
+
+echo 'Verifying LLVM code'
+opt -p verify -o .\objs\tmp.bc .\objs\hw_llvm_debug.ll
+checkecode
+
+echo 'Optimizing LLVM code'
+opt --O3 -o .\objs\hw_llvm_release.bc .\objs\hw_llvm_debug.ll
+checkecode
+
+echo 'Compiling LLVM code'
+llc -O0 --filetype=obj -o .\objs\hw_llvm_debug.obj .\objs\hw_llvm_debug.ll
+checkecode
+llc -O3 --filetype=obj -o .\objs\hw_llvm_release.obj .\objs\hw_llvm_release.bc
+checkecode
+
+echo 'Linking LLVM version'
+link_debug -pdb .\objs\hw_llvm_debug.pdb -out hw_llvm_debug.exe -objects .\objs\hw_llvm_debug.obj,libucrtd.lib,libvcruntimed.lib,libcmtd.lib,kernel32.lib
+checkecode
+link_release -out hw_llvm_release.exe -objects .\objs\hw_llvm_release.obj,libucrt.lib,libvcruntime.lib,libcmt.lib,kernel32.lib
+checkecode
 
