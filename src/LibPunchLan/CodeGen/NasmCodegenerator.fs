@@ -16,6 +16,7 @@ open LibPunchLan.Lexing
 open System.IO
 open FSharp.Reflection
 open System.Security.Cryptography
+open CodeGen.CodeUtils
 
 type DeferBody =
     { Body: StringBuilder
@@ -86,7 +87,6 @@ type FuncCallInfo =
       IsResultSizeFitsReg: bool
       IsFirstArgumentResultPtr: bool }
 
-
 let bprintf format : TypeCheckerM.M<NasmContext, unit>  = tchecker {
     let! sb = getFromContext (fun c -> c.StringBuilder)
     Printf.bprintf sb format
@@ -117,12 +117,6 @@ let getLabel (name: string) (source: Source) (modifier: Modifier option) =
     | Some Modifier.Extern -> name
 
 let getLabel' name source = getLabel name source None
-
-let getStringLabel (str: string) =
-    let strBytes = Encoding.UTF8.GetBytes str
-    let hashBytes = MD5.HashData strBytes
-    let hex = Convert.ToHexString(hashBytes).Replace("-", "").ToLowerInvariant ()
-    sprintf $"str_literal_%s{hex}"
 
 let number2nasm (number: Number) =
     let sign = if NumberMod.getNumberSign number >= 0 then "" else "-"
@@ -157,7 +151,7 @@ let string2nasm (str: string) =
 
 let rec expr2str (expression: Expression) =
     match expression with
-    | Expression.Constant (Value.String str) -> sprintf $"\"string: %s{getStringLabel str}\""
+    | Expression.Constant (Value.String str) -> sprintf $"\"string: %s{string2label str}\""
     | Expression.Constant (Value.Number number) -> number2nasm number
     | Expression.Constant (Value.Boolean bool) -> bool.ToString ()
     | Expression.Constant (Value.Char char) -> char.ToString ()
@@ -344,7 +338,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         match expression with
 
         | Expression.Constant (Value.String str) ->
-            let stringLabel = getStringLabel str
+            let stringLabel = string2label str
             do! bprintfn $"mov rax, %s{stringLabel}"
             do! bprintfn "push rax"
 
@@ -1624,7 +1618,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
 
         match expression with
         | Expression.Constant (Value.String string) ->
-            let strLabel = getStringLabel string
+            let strLabel = string2label string
             fprintfn $"dq %s{strLabel}"
 
         | Expression.Constant (Value.Number number) ->
@@ -1740,14 +1734,6 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
         fprintfn "%%endmacro"
         fprintf "\n"
 
-    let runm (m: TypeCheckerM.M<SourceContext, unit>) (ctx: SourceContext) =
-        match m ctx with
-        | Ok ((), []) -> ()
-        | Error [] -> ()
-        | Ok ((), xs)
-        | Error xs ->
-            failwithf $"There are some errors running type checker context:\n%s{diags2Str xs}"
-
     interface ICodegenerator with
 
         member _.Write() =
@@ -1764,9 +1750,9 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                         fprintfn $";;; Functions (%d{List.length functions})"
                         fprintfn "section .text align=16"
                         for func in functions do
-                            runm (writeFunction func) context
+                            runtc (writeFunction func) context
 
-                    runm (writeGlobalVariables ()) context
+                    runtc (writeGlobalVariables ()) context
                 | Error diags ->
                     failwithf $"Error creating type checker context:\n%s{diags2Str diags}"
 
@@ -1776,7 +1762,7 @@ type NasmCodegenerator (tw: TextWriter, program: Program, callconv: CallingConve
                 program.Sources
                 |> Seq.ofList
                 |> Seq.collect getStringsFromSource
-                |> Seq.map (fun str -> (getStringLabel str, str))
+                |> Seq.map (fun str -> (string2label str, str))
                 |> Seq.distinctBy fst
                 |> Seq.sortBy (fun (_, str) -> String.length str)
                 |> List.ofSeq

@@ -26,6 +26,8 @@
     <Compile Include="TypeChecking\TypeChecker.fs" />
 
     <Compile Include="CodeGen\Types.fs" />
+    <Compile Include="CodeGen\CodeUtils.fs" />
     <Compile Include="CodeGen\NasmCodegenerator.fs" />
+    <Compile Include="CodeGen\LLVMCodegenerator.fs" />
   </ItemGroup>
 </Project>

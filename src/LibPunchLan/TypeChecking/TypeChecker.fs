@@ -579,6 +579,11 @@ let makeContext (source: Source) (program: Program) =
     | Ok (_, errors)
     | Error errors -> Error errors
 
+let makeContext' source program =
+    match makeContext source program with
+    | Ok context -> context
+    | Error diags -> failwithf $"Error creating type checker context:\n%s{diags2Str diags}"
+
 let typeCheckProgram (program: Program) =
     let checkSource (source: Source) =
             match makeContext source program with

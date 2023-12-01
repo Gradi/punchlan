@@ -91,6 +91,16 @@ let checkWithContext context m = (fun _ -> m context)
 
 let checkWithContext' f m = (fun context -> m (f context))
 
+let diags2Str (diags: Diagnostics) =
+    let diags = diags |> List.map (fun d -> d.ToString ())
+    String.concat "\n\t" diags
+
+let runtc (m: M<'a, 'b>) (context: 'a) : 'b =
+    match m context with
+    | Ok (result, []) -> result
+    | Ok (_, diags)
+    | Error diags -> failwithf $"Error running typechecker context:\n%s{diags2Str diags}"
+
 let getAliasedSource (alias: string) : M<SourceContext, Source> = tchecker {
     if System.String.IsNullOrWhiteSpace alias then
         yield! fatalDiag "Source alias is null or empty or whitespace"
@@ -197,10 +207,6 @@ let unwrapList (list: M<'a, 'b> list) : M<'a,  'b list> = (fun context ->
     | Ok results -> Ok (results, [])
     | Error diags -> Error diags
     )
-
-let diags2Str (diags: Diagnostics) =
-    let diags = diags |> List.map (fun d -> d.ToString ())
-    String.concat "\n\t" diags
 
 let rec getStringsFromExpression (expression: Expression) : string seq = seq {
     match expression with

@@ -1,0 +1,1111 @@
+﻿module LibPunchLan.CodeGen.LLVMCodegenerator
+
+open LibPunchLan.Comp
+open LibPunchLan.Lexing
+open LibPunchLan.Parsing
+open LibPunchLan.TypeChecking
+open LibPunchLan.TypeChecking.TypeChecker
+open LibPunchLan.TypeChecking.TypeCheckerM
+open Microsoft.FSharp.Reflection
+open System.IO
+open System.Text
+open System
+
+type DeferBody =
+    { Variable: string
+      Body: StringBuilder }
+
+type StackAllocator () =
+    let mutable labelCount = 0
+    let mutable variableCount = 0
+    let mutable defers = []
+
+    member _.Defers = defers
+
+    member _.AllocateLabel suffix =
+        let result = sprintf $"lbl%d{labelCount}_%s{suffix}"
+        labelCount <- labelCount + 1
+        result
+
+    member _.AllocateResultVar () =
+        let res = sprintf $"%%val%d{variableCount}"
+        variableCount <- variableCount + 1
+        res
+
+    member this.AllocateDefer () =
+        let variable = this.AllocateResultVar ()
+        let defer = { DeferBody.Variable = variable; Body = StringBuilder 8192 }
+        defers <- defers @ [ defer ]
+        defer
+
+type LocalVariable =
+    | Variable of string
+    | Pointer of string
+
+type CodegenContext =
+    { SourceContext: SourceContext
+      Allocator: StackAllocator
+      FunctionEndLabel: string
+      Function: Function
+      LocalVariableEnv: Lazy<Map<string, LocalVariable>>
+      Body: StringBuilder
+      FunctionResultVariable: string }
+
+type MemberInfo =
+    { TypeDecl: TypeDeclRef
+      Name: string
+      Index: int
+      Type: TypeRef
+      LlvmType: string }
+
+type FuncArgumentInfo =
+    { Function: Function
+      FunctionDeclaringSource: Source
+      Index: int
+      Name: string
+      Type: TypeRef
+      LlvmType: string }
+
+
+
+let printf str : TypeCheckerM.M<CodegenContext, unit> = tchecker {
+    let! sb = getFromContext (fun c -> c.Body)
+    Printf.bprintf sb str
+}
+
+let printfn str : TypeCheckerM.M<CodegenContext, unit> = tchecker {
+    let! sb = getFromContext (fun c -> c.Body)
+    Printf.bprintf sb str
+    Printf.bprintf sb "\n"
+}
+
+let typeDecl2Typename (typeDecl: TypeDeclRef) =
+    let source = typeDecl.Source.Filename.Replace ('/', '_')
+    sprintf $"type___%s{source}_%s{typeDecl.TypeDecl.Name}"
+
+
+let type2llvmType (typ: TypeRef) : TypeCheckerM.M<SourceContext, string> = tchecker {
+    match TypeId.unwrapConst typ.TypeId with
+    | TypeId.Int8 | TypeId.Uint8 -> yield "i8"
+    | TypeId.Int16 | TypeId.Uint16 -> yield "i16"
+    | TypeId.Int32 | TypeId.Uint32 -> yield "i32"
+    | TypeId.Int64 | TypeId.Uint64 -> yield "i64"
+    | TypeId.Float -> yield "float"
+    | TypeId.Double -> yield "double"
+    | TypeId.Bool -> yield "i1"
+    | TypeId.Char -> yield "i8"
+    | TypeId.Void -> yield "void"
+    | TypeId.Pointer _ -> yield "ptr"
+    | TypeId.Named typename ->
+        let! typeDecl = locateTypeDecl typename
+        yield typeDecl2Typename typeDecl
+    | typ -> yield failwithf $"Type '%O{typ}' should have been covered."
+}
+
+let type2llvmType' (typ: TypeRef) : TypeCheckerM.M<CodegenContext, string> = tchecker {
+    yield! checkWithContext' (fun c -> c.SourceContext) (type2llvmType typ)
+}
+
+let expr2llvmType (expr: Expression) : TypeCheckerM.M<CodegenContext, string> = tchecker {
+    let! exprType = checkWithContext' (fun c -> c.SourceContext) (getExpressionType expr)
+    yield! type2llvmType' exprType
+}
+
+let getStringLabel (str: string) =
+    let bytes = Encoding.UTF8.GetBytes str
+    let hex = Convert.ToHexString bytes
+    let hex = hex.ToLower ()
+    sprintf $"string_%s{hex}"
+
+let string2llvm (str: string) =
+    let bytes = Encoding.UTF8.GetBytes str
+    let bytes = Array.append bytes (Array.create 8 (byte 0))
+    let hex = bytes |> Array.map (fun c -> sprintf $"i8 u0x%02x{c}") |> String.concat ", "
+    sprintf $"[ %d{Array.length bytes} x i8 ] [ %s{hex} ]"
+
+let number2llvm (number: Number) =
+    let sign = NumberMod.getNumberSign number
+    match NumberMod.unwrapNegative number with
+    | Number.Integer decs ->
+        let decs = Array.map NumberMod.decIntToStr decs |> String.concat ""
+        if sign >= 0 then decs else sprintf $"-%s{decs}"
+    | Number.HexInteger hex ->
+        let hex = Array.map NumberMod.hexIntToStr hex |> String.concat ""
+        sprintf $"0x%s{hex}"
+    | Number.BinaryInteger _ -> failwith "Binary numbers aren't supported."
+    | Number.Double dbl ->
+        let dbl = dbl.ToString (System.Globalization.CultureInfo.InvariantCulture)
+        if sign >= 0 then dbl else sprintf $"-%s{dbl}"
+    | Number.Negative _ -> failwithf "Negative number should have been removed."
+
+let getInternalName (str: string) (source: Source) =
+    let filename = source.Filename.Replace ('/', '_')
+    sprintf $"%s{filename}___%s{str}"
+
+let getMember (name: string) (typeRef: TypeRef) : TypeCheckerM.M<CodegenContext, MemberInfo> = tchecker {
+    match TypeId.unwrapConst typeRef.TypeId with
+    | TypeId.Named typename ->
+        let! typeDecl = checkWithContext' (fun c -> c.SourceContext) (locateTypeDecl typename)
+        let fields = typeDecl.TypeDecl.Fields |> List.indexed
+
+        match fields |> List.tryFind (fun (index, (fieldName, _)) -> fieldName = name) with
+        | Some (index, (fieldName, fieldType)) ->
+            let! llvmType = type2llvmType' { TypeId = fieldType; Source = typeDecl.Source }
+            yield {
+                TypeDecl = typeDecl
+                Name = fieldName
+                Index = index
+                Type = { TypeId = fieldType; Source = typeDecl.Source }
+                LlvmType = llvmType
+            }
+        | None -> yield! checkWithContext' (fun c -> c.SourceContext) (fatalDiag $"Can't field named '%s{name}' in '%s{typeDecl.TypeDecl.Name}'.")
+    | typ -> yield! checkWithContext' (fun c -> c.SourceContext) (fatalDiag $"Type '%O{typ}' is not an struct type.")
+}
+
+let getFunctionArgsInfo (func: Function) (source: Source) : TypeCheckerM.M<SourceContext, FuncArgumentInfo list> = tchecker {
+    yield!
+        func.Args
+        |> List.indexed
+        |> List.map (fun (index, (argName, argType)) -> tchecker {
+            let typeRef = { TypeId = argType; Source = source }
+            let! llvmType = type2llvmType typeRef
+            yield { FuncArgumentInfo.Function = func
+                    FunctionDeclaringSource = source
+                    Index = index
+                    Name = argName
+                    Type = typeRef
+                    LlvmType = llvmType }
+        })
+        |> unwrapList
+}
+
+type LLVMCodegenerator (tw: TextWriter, program: Program) =
+
+    let fprintf str = Printf.fprintf tw str
+    let fprintfn str =
+        fprintf str
+        fprintf "\n"
+
+    let rec writeExpression (expression: Expression) : TypeCheckerM.M<CodegenContext, string> = tchecker {
+        let! resultType = expr2llvmType expression
+        let! sourceContext = getFromContext (fun c -> c.SourceContext)
+
+        match expression with
+        | Expression.Constant (Value.String str) ->
+            let strLabel = getStringLabel str
+            yield sprintf $"(getelementptr i8, ptr @%s{strLabel}, i64 0)"
+        | Expression.Constant (Value.Number number) ->
+            let number = number2llvm number
+            yield sprintf $"(%s{number})"
+        | Expression.Constant (Value.Boolean bool) ->
+            yield sprintf $"(%O{bool})"
+        | Expression.Constant (Value.Char ch) ->
+            yield sprintf $"(%x{int ch})"
+
+        | Expression.Variable name ->
+            let! context = context
+            match Map.tryFind name context.LocalVariableEnv.Value with
+            | Some localName ->
+                match localName with
+                | Variable name -> yield sprintf $"(%s{name})"
+                | Pointer ptr -> yield sprintf $"(load %s{resultType}, %s{ptr})"
+            | None ->
+                let! variableDecl = checkWithContext' (fun c -> c.SourceContext) (locateVariableDecl { Name = name; Alias = None })
+                let name =
+                    match variableDecl.Variable.Modifier with
+                    | None -> getInternalName variableDecl.Variable.Name variableDecl.Source
+                    | Some _ -> variableDecl.Variable.Name
+                yield sprintf $"(load %s{resultType}, @%s{name})"
+
+        | Expression.FuncCall (name, arguments) ->
+            let! context = context
+            let result = context.Allocator.AllocateResultVar ()
+            let! func = checkWithContext context.SourceContext (locateFunctionDecl name)
+            let! funcReturnType = type2llvmType' { TypeId = func.Function.ReturnType; Source = func.Source }
+            let! argumentTypes =
+                func.Function.Args
+                |> List.map snd
+                |> List.map (fun t -> { TypeId = t; Source = func.Source })
+                |> List.map type2llvmType'
+                |> unwrapList
+
+            let! argumentsExecuted =
+                arguments
+                |> List.map writeExpression
+                |> unwrapList
+
+            let functionName = getInternalName func.Function.Name func.Source
+
+            if TypeId.isVoid func.Function.ReturnType then
+                do! printf $"call ccc %s{funcReturnType} @%s{functionName} ( "
+            else
+                do! printf $"%s{result} = call ccc %s{funcReturnType} @%s{functionName} ( "
+
+            for index, (argument, argumentType) in List.indexed <| List.zip argumentsExecuted argumentTypes do
+                if index > 0 then do! printf ", "
+                do! printf $"%s{argumentType} %s{argument}"
+            do! printfn " )"
+
+            yield result
+
+        | Expression.MemberAccess (Expression.Variable variable as variableExpr, memberName) when
+            isStructVariableWithMember variable memberName sourceContext ->
+
+            let! aggregateType = checkWithContext' (fun c -> c.SourceContext) (getExpressionType variableExpr)
+            let! llvmType = type2llvmType' aggregateType
+            let! memberInfo = getMember memberName aggregateType
+            let! result = getFromContext (fun c -> c.Allocator.AllocateResultVar ())
+
+            let! address = getExpressionAddress variableExpr
+            do! printfn $"%s{result} = load %s{memberInfo.LlvmType}, ptr (getelementptr %s{llvmType}, ptr %s{address}, i64 0, i64 %d{memberInfo.Index})"
+            yield result
+
+        | Expression.MemberAccess (Expression.Variable alias, variable) when
+            getAliasedSource alias sourceContext |> Result.isOk ->
+
+            let! variableDecl = checkWithContext sourceContext (locateVariableDecl { Name = variable; Alias = Some alias })
+            let! llvmType = type2llvmType' { TypeId = variableDecl.Variable.TypeId; Source = variableDecl.Source }
+            let! result = getFromContext (fun c -> c.Allocator.AllocateResultVar ())
+
+            let name =
+                match variableDecl.Variable.Modifier with
+                | None -> getInternalName variableDecl.Variable.Name variableDecl.Source
+                | Some _ -> variableDecl.Variable.Name
+
+            do! printfn $"%s{result} = load %s{llvmType}, ptr @%s{name}"
+            yield result
+
+        | Expression.MemberAccess (left, name) ->
+            let! aggregateType = checkWithContext sourceContext (getExpressionType left)
+            let! llvmType = type2llvmType' aggregateType
+            let! memberInfo = getMember name aggregateType
+            let! result = getFromContext (fun c -> c.Allocator.AllocateResultVar ())
+
+            let! result = writeExpression left
+            do! printfn $"%s{result} = extractvalue %s{llvmType} %s{result}, i64 %d{memberInfo.Index}"
+            yield result
+
+        | Expression.BinaryExpression { Left = left; Right = right; Kind = kind } ->
+            let! leftType = checkWithContext sourceContext (getExpressionType left)
+            let! leftLlvmType = type2llvmType' leftType
+            let leftType = leftType.TypeId
+            let! rightType = checkWithContext sourceContext (getExpressionType right)
+            let! rightLlvmType = type2llvmType' rightType
+            let rightType = rightType.TypeId
+
+            let! leftTmpRes = getFromContext (fun c -> c.Allocator.AllocateResultVar ())
+            let! rightTmpRes = getFromContext (fun c -> c.Allocator.AllocateResultVar ())
+
+            let! allocator = getFromContext (fun c -> c.Allocator)
+
+            let fail op = tchecker { yield! checkWithContext sourceContext (fatalDiag $"Operation '%O{leftType}' %s{op} '%O{rightType}' is not covered.") }
+
+            let result = allocator.AllocateResultVar ()
+
+            match kind with
+            | BinaryExpressionKind.Plus ->
+                let! left = writeExpression left
+                let! right = writeExpression right
+
+                if TypeId.isUnsigned leftType && TypeId.isUnsigned rightType then
+
+                    do! printfn $"%s{leftTmpRes} = zext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = zext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = add i64 %s{leftTmpRes}, %s{rightTmpRes}"
+
+                elif TypeId.isSigned leftType && TypeId.isSigned rightType then
+
+                    do! printfn $"%s{leftTmpRes} = sext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = sext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = add i64 %%%s{leftTmpRes}, %s{rightTmpRes}"
+
+                elif TypeId.isPointer leftType && TypeId.isUnsigned rightType then
+
+                    do! printfn $"%s{leftTmpRes} = ptrtoint ptr %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = zext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = inttoptr i64 (add i64 %s{leftTmpRes}, %s{rightTmpRes}) to ptr"
+
+                elif TypeId.isUnsigned leftType && TypeId.isPointer rightType then
+
+                    do! printfn $"%s{leftTmpRes} = zext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = ptrtoint ptr %s{right} to i64"
+                    do! printfn $"%s{result} = inttoptr (add i64 %s{leftTmpRes}, %s{rightTmpRes}) to ptr"
+
+                elif TypeId.isFloat leftType && TypeId.isFloat rightType then
+
+                    do! printfn $"%s{leftTmpRes} = fpext %s{leftLlvmType} %s{left} to double"
+                    do! printfn $"%s{rightTmpRes} = fpext %s{rightLlvmType} %s{right} to double"
+                    do! printfn $"%s{result} = fadd double %s{leftTmpRes}, %s{rightTmpRes}"
+
+                else
+                    yield! fail "+"
+
+            | BinaryExpressionKind.Minus ->
+                let! left = writeExpression left
+                let! right = writeExpression right
+
+                if TypeId.isUnsigned leftType && TypeId.isUnsigned rightType then
+
+                    do! printfn $"%s{leftTmpRes} = zext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = zext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = sub i64 %s{leftTmpRes}, %s{rightTmpRes}"
+
+                elif TypeId.isSigned leftType && TypeId.isSigned rightType then
+
+                    do! printfn $"%s{leftTmpRes} = sext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = sext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = sub i64 %s{leftTmpRes}, %s{rightTmpRes}"
+
+                elif TypeId.isPointer leftType && TypeId.isUnsigned rightType then
+
+                    do! printfn $"%s{leftTmpRes} = ptrtoint ptr %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = zext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = inttoptr (sub i64 %s{leftTmpRes}, %s{rightTmpRes}) to ptr"
+
+                elif TypeId.isUnsigned leftType && TypeId.isPointer rightType then
+
+                    do! printfn $"%s{leftTmpRes} = zext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = ptrtoint ptr %s{right} to i64"
+                    do! printfn $"%s{result} = inttoptr (sub i64 %s{leftTmpRes}, %s{rightTmpRes}) to ptr"
+
+                elif TypeId.isFloat leftType && TypeId.isFloat rightType then
+
+                    do! printfn $"%s{leftTmpRes} = fpext %s{leftLlvmType} %s{left} to double"
+                    do! printfn $"%s{rightTmpRes} = fpext %s{rightLlvmType} %s{right} to double"
+                    do! printfn $"%s{result} = fsub double %s{leftTmpRes}, %s{rightTmpRes}"
+
+                else
+                    yield! fail "-"
+
+            | BinaryExpressionKind.Multiply ->
+                let! left = writeExpression left
+                let! right = writeExpression right
+
+                if TypeId.isUnsigned leftType && TypeId.isUnsigned rightType then
+
+                    do! printfn $"%s{leftTmpRes} = zext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = zext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = mul i64 %s{leftTmpRes}, %s{rightTmpRes}"
+
+                elif TypeId.isSigned leftType && TypeId.isSigned rightType  then
+
+                    do! printfn $"%s{leftTmpRes} = sext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = sext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = mul i64 %s{leftTmpRes}, %s{rightTmpRes}"
+
+                elif TypeId.isFloat leftType && TypeId.isFloat rightType then
+
+                    do! printfn $"%s{leftTmpRes} = fpext %s{leftLlvmType} %s{left} to double"
+                    do! printfn $"%s{rightTmpRes} = fpext %s{rightLlvmType} %s{right} to double"
+                    do! printfn $"%s{result} = fmul double %s{leftTmpRes}, %s{rightTmpRes}"
+
+                else
+                    yield! fail "*"
+
+            | BinaryExpressionKind.Division ->
+                let! left = writeExpression left
+                let! right = writeExpression right
+
+                if TypeId.isUnsigned leftType && TypeId.isUnsigned rightType then
+
+                    do! printfn $"%s{leftTmpRes} = zext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = zext %s{rightLlvmType} %s{right}  to i64"
+                    do! printfn $"%s{result} = udiv i64 %s{leftTmpRes}, %s{rightTmpRes}"
+
+                elif TypeId.isSigned leftType && TypeId.isSigned rightType then
+
+                    do! printfn $"%s{leftTmpRes} = sext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = sext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = sdiv i64 %s{leftTmpRes}, %s{rightTmpRes}"
+
+                elif TypeId.isFloat leftType && TypeId.isFloat rightType then
+
+                    do! printfn $"%s{leftTmpRes} = fpext %s{leftLlvmType} %s{left} to double"
+                    do! printfn $"%s{rightTmpRes} = fpext %s{rightLlvmType} %s{right} to double"
+                    do! printfn $"%s{result} = fdiv double %s{leftTmpRes}, %s{rightTmpRes}"
+
+                else
+                    yield! fail "/"
+
+            | BinaryExpressionKind.Equal
+            | BinaryExpressionKind.NotEqual ->
+                let! left = writeExpression left
+                let! right = writeExpression right
+                let op = if kind = BinaryExpressionKind.Equal then "eq" else "ne"
+
+                if TypeId.isBool leftType && TypeId.isBool rightType then
+                    do! printfn $"%s{result} = icmp %s{op} i1 %s{left}, %s{right}"
+
+                elif TypeId.isIntegerType leftType && TypeId.isIntegerType rightType then
+                    do! printfn $"%s{leftTmpRes} = zext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = zext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = icmp %s{op} i64 %s{leftTmpRes}, %s{rightTmpRes}"
+
+                elif TypeId.isPointer leftType && TypeId.isPointer rightType then
+                    do! printfn $"%s{result} = icmp %s{op} ptr %s{left}, %s{right}"
+
+                elif TypeId.isPointer leftType && TypeId.isUnsigned rightType then
+                    do! printfn $"%s{leftTmpRes} = ptrtoint ptr %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = zext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{result} = icmp %s{op} i64 %s{leftTmpRes}, %s{rightTmpRes}"
+
+                else
+                    yield! fail "(==, !=)"
+
+            | BinaryExpressionKind.Less
+            | BinaryExpressionKind.LessOrEqual ->
+                let! left = writeExpression left
+                let! right = writeExpression right
+
+                if TypeId.isUnsigned leftType && TypeId.isUnsigned rightType then
+                    let op = if kind = Less then "ult" else "ule"
+
+                    do! printfn $"%s{leftTmpRes} = zext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = zext %s{rightTmpRes} %s{right} to i64"
+                    do! printfn $"%s{result} = icmp %s{op} i64 %s{leftTmpRes}, %s{rightTmpRes}"
+
+                elif TypeId.isSigned leftType && TypeId.isSigned rightType then
+                    let op = if kind = Less then "slt" else "sle"
+
+                    do! printfn $"%s{leftTmpRes} = sext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = sext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = icmp %s{op} i64 %s{leftTmpRes}, %s{rightTmpRes}"
+
+                else
+                    yield! fail "(<, <=)"
+
+            | BinaryExpressionKind.Greater
+            | BinaryExpressionKind.GreaterOrEqual ->
+                let! left = writeExpression left
+                let! right = writeExpression right
+
+                if TypeId.isUnsigned leftType && TypeId.isUnsigned rightType then
+                    let op = if kind = Greater then "ugt" else "uge"
+
+                    do! printfn $"%s{leftTmpRes} = zext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = zext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = icmp %s{op} i64 %s{leftTmpRes}, %s{rightTmpRes}"
+
+                elif TypeId.isSigned leftType && TypeId.isSigned rightType then
+                    let op = if kind = Greater then "sgt"  else "sge"
+
+                    do! printfn $"%s{leftTmpRes} = sext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = sext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = icmp %s{op} i64 %s{leftTmpRes}, %s{rightTmpRes}"
+
+                else
+                    yield! fail "(>, >=)"
+
+            | BinaryExpressionKind.Or ->
+
+                if TypeId.isBool leftType && TypeId.isBool rightType then
+                    let branchStart = allocator.AllocateLabel "or_branch_start"
+                    let branchEnd = allocator.AllocateLabel "or_branch_end"
+                    let rightHand = allocator.AllocateLabel "or_right_hand"
+
+                    do! printfn $"%s{branchStart}:"
+                    let! left = writeExpression left
+                    do! printfn $"%s{leftTmpRes} = icmp eq i1 %s{left}, 1"
+                    do! printfn $"br i1 %s{leftTmpRes}, label %s{branchEnd}, label %s{rightHand}"
+
+                    do! printfn $"%s{rightHand}:"
+                    let! right = writeExpression right
+                    do! printfn $"%s{rightTmpRes} = icmp eq i1 %s{right}, 1"
+                    do! printfn $"br label %s{branchEnd}"
+
+                    do! printfn $"%s{branchEnd}:"
+                    do! printfn $"%s{result} = phi i1 [%s{leftTmpRes}, %s{branchStart}], [%s{rightTmpRes}, %s{rightHand}]"
+
+                elif TypeId.isSigned leftType && TypeId.isSigned rightType then
+                    let! left = writeExpression left
+                    let! right = writeExpression right
+
+                    do! printfn $"%s{leftTmpRes} = sext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = sext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = or i64 %s{leftTmpRes}, %s{rightTmpRes}"
+
+                elif TypeId.isUnsigned leftType && TypeId.isUnsigned rightType then
+                    let! left = writeExpression left
+                    let! right = writeExpression right
+
+                    do! printfn $"%s{leftTmpRes} = zext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = zext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = or i64 %s{leftTmpRes}, %s{rightTmpRes}"
+
+                else
+                    yield! fail "or"
+
+            | BinaryExpressionKind.And ->
+
+                if TypeId.isBool leftType && TypeId.isBool rightType then
+                    let branchStart = allocator.AllocateLabel "and_branch_start"
+                    let branchEnd = allocator.AllocateLabel "and_branch_end"
+                    let rightHand = allocator.AllocateLabel "and_right_hand"
+
+                    do! printfn $"%s{branchStart}:"
+                    let! left = writeExpression left
+                    do! printfn $"%s{leftTmpRes} = icmp i1 eq %s{left}, 0"
+                    do! printfn $"br i1 %s{leftTmpRes}, label %s{branchEnd}, label %s{rightHand}"
+
+                    do! printfn $"%s{rightHand}:"
+                    let! right = writeExpression right
+                    do! printfn $"%s{rightTmpRes} = icmp i1 eq %s{right}, 1"
+                    do! printfn $"br label %s{branchEnd}"
+
+                    do! printfn $"%s{branchEnd}:"
+                    do! printfn $"%s{result} = phi i1 [%s{leftTmpRes}, %s{branchStart}], [%s{rightTmpRes}, %s{rightHand}]"
+
+                elif TypeId.isUnsigned leftType && TypeId.isUnsigned rightType then
+                    let! left = writeExpression left
+                    let! right = writeExpression right
+
+                    do! printfn $"%s{leftTmpRes} = zext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = zext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = and i64 %s{leftTmpRes}, %s{rightTmpRes}"
+
+                elif TypeId.isSigned leftType && TypeId.isSigned rightType then
+                    let! left = writeExpression left
+                    let! right = writeExpression right
+
+                    do! printfn $"%s{leftTmpRes} = sext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = sext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = and i64 %s{leftTmpRes}, %s{rightTmpRes}"
+
+                else
+                    yield! fail "and"
+
+            | BinaryExpressionKind.Xor ->
+                let! left = writeExpression left
+                let! right = writeExpression right
+
+                if TypeId.isSigned leftType && TypeId.isSigned rightType then
+
+                    do! printfn $"%s{leftTmpRes} = sext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = sext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = xor i64  %s{leftTmpRes}, %s{rightTmpRes}"
+
+                elif TypeId.isUnsigned leftType && TypeId.isUnsigned rightType then
+
+                    do! printfn $"%s{leftTmpRes} = zext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = zext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = xor i64 %s{leftTmpRes}, %s{rightTmpRes}"
+
+                else
+                    yield! fail "xor"
+
+            | BinaryExpressionKind.RShift ->
+                let! left = writeExpression left
+                let! right = writeExpression right
+
+                if TypeId.isSigned leftType && TypeId.isSigned rightType then
+                    do! printfn $"%s{leftTmpRes} = sext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = sext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = lshr i64 %s{leftTmpRes}, %s{rightTmpRes}"
+
+                elif TypeId.isUnsigned leftType && TypeId.isUnsigned rightType then
+                    do! printfn $"%s{leftTmpRes} = zext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = zext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = lshr i64 %s{leftTmpRes}, %s{rightTmpRes}"
+
+                else
+                    yield! fail ">>"
+
+            | BinaryExpressionKind.LShift ->
+                let! left = writeExpression left
+                let! right = writeExpression right
+
+                if TypeId.isSigned leftType && TypeId.isSigned rightType then
+                    do! printfn $"%s{leftTmpRes} = sext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%s{rightTmpRes} = sext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = shl i64 %s{leftTmpRes}, %s{rightTmpRes}"
+
+                elif TypeId.isUnsigned leftType && TypeId.isUnsigned rightType then
+                    do! printfn $"%s{leftTmpRes} = zext %s{leftLlvmType} %s{left} to i64"
+                    do! printfn $"%%%s{rightTmpRes} = zext %s{rightLlvmType} %s{right} to i64"
+                    do! printfn $"%s{result} = shl i64 %s{leftTmpRes}, %s{rightTmpRes}"
+
+                else
+                    yield! fail "<<"
+
+            yield result
+
+        | Expression.ArrayAccess (left, right) ->
+            let! leftType = checkWithContext sourceContext (getExpressionType left)
+            let! arrayType = checkWithContext sourceContext (getArraySubitemType leftType.TypeId)
+            let arrayType = { TypeId = arrayType; Source = leftType.Source }
+            let! llvmType = type2llvmType' arrayType
+            let! result = getFromContext (fun c -> c.Allocator.AllocateResultVar ())
+
+            let! left = writeExpression left
+            let! right = writeExpression right
+            do! printfn $"%s{result} = load %s{llvmType}, ptr (getelementptr %s{llvmType}, ptr %s{left}, i64 0, i64 %s{right})"
+            yield result
+
+        | Expression.StructCreation (typename, fields) ->
+            let! typeRef = checkWithContext sourceContext (getExpressionType expression)
+            let! typeDecl = checkWithContext sourceContext (locateTypeDecl typename)
+            match typeDecl.TypeDecl.TypeType with
+            | TypeType.Union -> yield! checkWithContext sourceContext (fatalDiag "Unions arent' supported in LLVM codegen.")
+            | TypeType.Struct ->
+                let! llvmStructType = expr2llvmType expression
+                let! allocator = getFromContext (fun c -> c.Allocator)
+
+                let! fields =
+                    fields
+                    |> List.map (fun (name, expr) -> tchecker {
+                        let! expr = writeExpression expr
+                        yield (name, expr)
+                    })
+                    |> unwrapList
+
+                let folder variable (fieldName, fieldVariable) = (fun () -> tchecker {
+                    let! variable = variable ()
+                    let! memberInfo = getMember fieldName typeRef
+                    let nextVariable = allocator.AllocateResultVar ()
+                    do! printfn $"%s{nextVariable} = insertvalue %s{llvmStructType} %s{variable}, %s{memberInfo.LlvmType}, i64 %d{memberInfo.Index}"
+                    yield nextVariable
+                })
+
+                let initialVariable = allocator.AllocateResultVar ()
+                do! printfn $"%s{initialVariable} = undef"
+                let writer =
+                    fields
+                    |> List.fold folder (fun () -> tchecker { yield initialVariable })
+                yield! writer ()
+
+        | Expression.Bininversion expr ->
+            let! exprLlvmType = expr2llvmType expr
+            let! expr = writeExpression expr
+            yield sprintf $"(trunc i64 (call i64 @llvm.bitreverse.i64 (zext %s{exprLlvmType} %s{expr} to i64)) to %s{exprLlvmType})"
+
+        | Expression.Sizeof typeid ->
+            let! size = checkWithContext sourceContext (getTypeIdSize { TypeId = typeid; Source = sourceContext.CurrentSource })
+            yield sprintf $"(%d{size})"
+
+        | Expression.Addrof expr ->
+            let! addr = getExpressionAddress expr
+            yield sprintf $"(%s{addr})"
+
+        | Expression.Deref expr ->
+            let! exprType = checkWithContext sourceContext (getExpressionType expr)
+            match TypeId.unwrapConst exprType.TypeId with
+            | TypeId.Pointer pointedType ->
+                let pointedType = { TypeId = pointedType; Source = exprType.Source }
+                let! llvmPointedType = type2llvmType' pointedType
+                let! address = writeExpression expr
+                yield sprintf $"(load %s{llvmPointedType}, ptr %s{address})"
+            | typ -> yield! checkWithContext sourceContext (fatalDiag $"Type id should have been pointer, not '%O{typ}'.")
+
+        | Expression.Cast (targetTypeId, expression) ->
+            let target = { TypeId = targetTypeId; Source = sourceContext.CurrentSource }
+            let! targetLlvm = type2llvmType' target
+            let! source = checkWithContext sourceContext (getExpressionType expression)
+            let! sourceLlvm = type2llvmType' source
+            let! result = getFromContext (fun c -> c.Allocator.AllocateResultVar ())
+
+            let! sourceExpr = writeExpression expression
+
+            if TypeId.isIntegerType target.TypeId && TypeId.isIntegerType source.TypeId then
+                do! printfn $"%s{result} = bitcast %s{sourceLlvm} %s{sourceExpr} to %s{targetLlvm}"
+
+            elif TypeId.isUnsigned target.TypeId && TypeId.isFloat source.TypeId then
+                do! printfn $"%s{result} = fptoui %s{sourceLlvm} %s{sourceExpr} to %s{targetLlvm}"
+
+            elif TypeId.isFloat target.TypeId && TypeId.isUnsigned source.TypeId then
+                do! printfn $"%s{result} = uitofp %s{sourceLlvm} %s{sourceExpr} to %s{targetLlvm}"
+
+            elif TypeId.isSigned target.TypeId && TypeId.isFloat source.TypeId then
+                do! printfn $"%s{result} = fptosi %s{sourceLlvm} %s{sourceExpr} to %s{targetLlvm}"
+
+            elif TypeId.isFloat target.TypeId && TypeId.isSigned source.TypeId then
+                do! printfn $"%s{result} = sitofp %s{sourceLlvm} %s{sourceExpr} to %s{targetLlvm}"
+
+            elif TypeId.isPointer target.TypeId && TypeId.isPointer source.TypeId then
+                do! printfn $"%s{result} = bitcast ptr %s{sourceExpr} to ptr"
+
+            else
+                yield! checkWithContext sourceContext (fatalDiag $"Cast from '%O{source.TypeId} to '%O{target.TypeId}' is not covered.")
+
+            yield result
+    }
+
+    and getExpressionAddress (expression: Expression) : TypeCheckerM.M<CodegenContext, string> = tchecker {
+        let! result = getFromContext (fun c -> c.Allocator.AllocateResultVar ())
+        let! context = context
+
+        match expression with
+
+        | Expression.Variable variable ->
+            match Map.tryFind variable context.LocalVariableEnv.Value with
+            | Some variable ->
+                match variable with
+                | Variable _ -> yield! checkWithContext context.SourceContext (fatalDiag "Can't get address of non addresable variable")
+                | Pointer ptr -> yield sprintf $"(%s{ptr})"
+            | None ->
+                let! variableDecl = checkWithContext context.SourceContext (locateVariableDecl { Name = variable; Alias = None })
+                let! llvmType = type2llvmType' { TypeId = variableDecl.Variable.TypeId; Source = variableDecl.Source }
+                let name =
+                    match variableDecl.Variable.Modifier with
+                    | None -> getInternalName variableDecl.Variable.Name variableDecl.Source
+                    | Some _ -> variableDecl.Variable.Name
+
+                yield sprintf $"(getelementptr %s{llvmType}, ptr @%s{name}, i64 0)"
+
+        | Expression.ArrayAccess (array, index) ->
+            let! arrayType = checkWithContext context.SourceContext (getExpressionType array)
+            let! arraySubitem = checkWithContext context.SourceContext (getArraySubitemType arrayType.TypeId)
+            let arraySubitem = { TypeId = arraySubitem; Source = arrayType.Source }
+            let! arrayLlvmType = type2llvmType' arraySubitem
+
+            let! array = writeExpression array
+            let! index = writeExpression index
+            yield sprintf $"(getelementptr %s{arrayLlvmType}, ptr %s{array}, i64 0, i64 %s{index})"
+
+        | expression ->
+            let union, _ = FSharpValue.GetUnionFields (expression, expression.GetType ())
+            yield! checkWithContext context.SourceContext (fatalDiag $"Address of '%s{union.Name}' can't be calculated.")
+    }
+
+    let rec writeStatements (statements: Statement list) : TypeCheckerM.M<CodegenContext, unit> = tchecker {
+        let folder prev statement = (fun () -> tchecker {
+            let! context = prev ()
+            yield! checkWithContext context (writeStatement statement)
+        })
+
+        let writer =
+            statements
+            |> List.fold folder (fun () -> tchecker { yield! context })
+
+        let! _ = writer ()
+        yield ()
+    }
+
+    and writeStatement (statement: Statement) : TypeCheckerM.M<CodegenContext, CodegenContext> = tchecker {
+        match statement with
+        | Statement.VarDecl (name, varType, initExpression) ->
+            let! context = context
+            let typeRef = { TypeId = varType; Source = context.SourceContext.CurrentSource }
+            let llvmName = context.Allocator.AllocateResultVar ()
+            let localVarEnv = lazy (Map.add name (Pointer llvmName) context.LocalVariableEnv.Value)
+            let nameTypeEnv = lazy (Map.add name typeRef context.SourceContext.NameTypeEnv.Value)
+            let newContext = { context with LocalVariableEnv = localVarEnv
+                                            SourceContext = { context.SourceContext with NameTypeEnv = nameTypeEnv } }
+            let! llvmType = type2llvmType' typeRef
+
+            do! printfn $"%s{llvmName} = alloca %s{llvmType} ; %s{name}"
+            match initExpression with
+            | Some expression ->
+                let! source = writeExpression expression
+                let! destination = checkWithContext newContext (getExpressionAddress (Expression.Variable name))
+                do! printfn $"store %s{llvmType} %s{source}, ptr %s{destination}"
+            | None -> ()
+
+            yield newContext
+
+        | Statement.VarAssignment (left, right) ->
+            let! destination = getExpressionAddress left
+            let! source = writeExpression right
+            let! sourceLlvmType = expr2llvmType left
+            do! printfn $"store %s{sourceLlvmType} %s{source}, ptr %s{destination}"
+            yield! context
+
+        | Statement.If (main, elseIfs, elses) ->
+            let! allocator = getFromContext (fun c -> c.Allocator)
+            let ifEnd = allocator.AllocateLabel "if_end"
+
+            let writeIfCond (cond: IfCond) elseBranch = tchecker {
+                let res = allocator.AllocateResultVar ()
+                let body = allocator.AllocateLabel "if_body"
+
+                let! condition = writeExpression cond.Condition
+                do! printfn $"%s{res} = icmp eq i1 %s{condition}, 1"
+                do! printfn $"br i1 %s{res}, label %s{body}, label %s{elseBranch}"
+                do! printfn $"%s{body}:"
+                do! writeStatements cond.Body
+                do! printfn $"br label %s{ifEnd}"
+            }
+
+            let elseBranch = allocator.AllocateLabel "if_else_branch"
+            do! writeIfCond main elseBranch
+
+            let! finalElseBranch =
+                elseIfs
+                |> List.fold (fun elseBranch ifCond -> tchecker {
+                    let! elseBranch = elseBranch
+                    let! nextElseBranch = getFromContext (fun c -> c.Allocator.AllocateLabel "if_else_branch")
+
+                    do! printfn $"%s{elseBranch}:"
+                    do! writeIfCond ifCond nextElseBranch
+                    yield nextElseBranch
+                }) (tchecker { yield elseBranch })
+
+            do! printfn $"%s{finalElseBranch}:"
+            do! writeStatements elses
+            do! printfn $"%s{ifEnd}:"
+            yield! context
+
+        | Statement.For (variable, startExpr, endExpr, stepExpr, body) ->
+            let! context = context
+            let typeRef = { TypeId = TypeId.Int64; Source = context.SourceContext.CurrentSource }
+            let nameTypeEnv = lazy (Map.add variable typeRef context.SourceContext.NameTypeEnv.Value)
+            let localVariableName = context.Allocator.AllocateResultVar ()
+            let localVarEnv = lazy (Map.add variable (Variable localVariableName) context.LocalVariableEnv.Value)
+            let newContext = { context with LocalVariableEnv = localVarEnv; SourceContext = { context.SourceContext with NameTypeEnv = nameTypeEnv } }
+
+            let stepExpr = stepExpr |> Option.defaultValue (Expression.Constant (Value.Number (Number.Integer [| DecInt.One |])))
+
+            // Initialize for loop variable
+            do! printfn $"%%%s{localVariableName} = alloca i64 ; %s{variable}"
+            let! result = writeExpression startExpr
+            do! printfn $"store i64 %%%s{result}, ptr %%%s{localVariableName}"
+
+            // Compare for loop variable
+            let againLabel = context.Allocator.AllocateLabel "for_again"
+            let bodyLabel = context.Allocator.AllocateLabel "for_body"
+            let endLabel = context.Allocator.AllocateLabel "for_end"
+
+            do! printfn $"%s{againLabel}:"
+            let! endResult = writeExpression endExpr
+            do! printfn $"%%i = load i64, ptr %%%s{localVariableName}"
+            do! printfn $"%%res = icmp sge i64 %%i, %%%s{endResult}"
+            do! printfn $"br i1 %%res, label %%%s{endLabel}, label %%%s{bodyLabel}"
+
+            // Body
+            do! printfn $"%s{bodyLabel}:"
+            do! checkWithContext newContext (writeStatements body)
+            do! printfn $"br label %%%s{againLabel}"
+            do! printfn $"%s{endLabel}:"
+
+            yield context
+
+        | Statement.While (condition, body) ->
+            let! allocator = getFromContext (fun c -> c.Allocator)
+            let againLabel = allocator.AllocateLabel "while_again"
+            let bodyLabel = allocator.AllocateLabel "while_body"
+            let endLabel = allocator.AllocateLabel "while_end"
+
+            do! printfn $"%s{againLabel}:"
+            let! result = writeExpression condition
+            do! printfn $"%%result = icmp eq i1 %%%s{result}, 1"
+            do! printfn $"br i1 %%result, label %%%s{bodyLabel}, label %%%s{endLabel}"
+            do! printfn $"%s{bodyLabel}:"
+            do! writeStatements body
+            do! printfn $"br label %%%s{againLabel}"
+            do! printfn $"%s{endLabel}:"
+            yield! context
+
+        | Statement.Defer body ->
+            match body with
+            | [] -> yield! context
+            | body ->
+                let! context = context
+                let defer = context.Allocator.AllocateDefer ()
+
+                do! printfn $"store i1 1, ptr %%%s{defer.Variable} ; Set defer to true"
+                let newContext = { context with Body = defer.Body }
+                do! checkWithContext newContext (writeStatements body)
+                yield context
+
+        | Statement.Return ->
+            let! endLabel = getFromContext (fun c -> c.FunctionEndLabel)
+            do! printfn $"br label %%%s{endLabel}"
+            yield! context
+
+        | Statement.ReturnExpr expr ->
+            let! context = context
+            let! exprType = checkWithContext' (fun c -> c.SourceContext) (getExpressionType expr)
+            let! llvmType = type2llvmType' exprType
+
+            let! result = writeExpression expr
+            do! printfn $"store %s{llvmType} %%%s{result}, ptr %%%s{context.FunctionResultVariable}"
+            do! printfn $"br label %%%s{context.FunctionEndLabel}"
+            yield context
+
+        | Statement.Expression (Expression.FuncCall _ as funcCallExpr) ->
+            let! _ = writeExpression funcCallExpr
+            yield! context
+
+        | Statement.Expression expression ->
+            let union, _ = FSharpValue.GetUnionFields (expression, expression.GetType ())
+            yield! checkWithContext' (fun c -> c.SourceContext) (fatalDiag $"Expression of type '%s{union.Name}' can't be used as statement.")
+    }
+
+    let writeNativeFunction (func: Function) : TypeCheckerM.M<SourceContext, unit> = tchecker {
+        let! context = context
+
+        let nameTypeEnv = lazy (
+                func.Args
+                |> List.fold (fun env (name, typ) -> Map.add name { TypeId = typ; Source = context.CurrentSource } env)
+                       context.NameTypeEnv.Value
+            )
+        let localVarEnv = lazy (
+                func.Args
+                |> List.map fst
+                |> List.fold (fun env name -> Map.add name (Variable (sprintf $"%%%s{name}")) env) Map.empty
+            )
+
+        let allocator = StackAllocator ()
+        let funcEndLabel = allocator.AllocateLabel (sprintf $"%s{func.Name}_function_end")
+        let funcResultVar = allocator.AllocateResultVar ()
+
+        let codegenContext =
+            { CodegenContext.SourceContext = { context with NameTypeEnv = nameTypeEnv }
+              Allocator = allocator
+              FunctionEndLabel = funcEndLabel
+              Function = func
+              Body = StringBuilder 8192
+              FunctionResultVariable = funcResultVar
+              LocalVariableEnv = localVarEnv }
+
+        let! returnType = type2llvmType { TypeId = func.ReturnType; Source = context.CurrentSource }
+        fprintf $"define private ccc %s{returnType} @%s{getInternalName func.Name context.CurrentSource} ( "
+        for index, (argName, argType) in List.indexed func.Args do
+            let! typ = type2llvmType { TypeId = argType; Source = context.CurrentSource }
+            if index > 0 then fprintf ", "
+            fprintf $"%s{typ} %%%s{argName}"
+        fprintfn " ) alignstack(16) nounwind"
+
+        fprintfn "{"
+        fprintfn "enter:"
+
+        if not (TypeId.isVoid func.ReturnType) then
+            fprintfn $"{funcResultVar} = alloca %s{returnType}"
+
+        do! checkWithContext codegenContext (writeStatements func.Body)
+        fprintf $"%O{codegenContext.Body}"
+        fprintfn $"br label %%%s{funcEndLabel}"
+
+        fprintfn $"%s{funcEndLabel}:"
+        if not (TypeId.isVoid func.ReturnType) then
+            let result = allocator.AllocateResultVar ()
+            fprintfn $"%s{result} = load %s{returnType}, ptr %s{funcResultVar}"
+            fprintfn $"ret %s{returnType} %s{result}"
+        else
+            fprintfn "ret void"
+
+        fprintfn "}"
+    }
+
+    let writeExportWrapper (func: Function) : TypeCheckerM.M<SourceContext, unit> = tchecker {
+        let! context = context
+        let! returnType = type2llvmType { TypeId = func.ReturnType; Source = context.CurrentSource }
+
+        let! args = getFunctionArgsInfo func context.CurrentSource
+        let internalName = getInternalName func.Name context.CurrentSource
+
+        fprintf $"define ccc %s{returnType} @%s{func.Name} ( "
+        for argument in args do
+            if argument.Index > 0 then fprintf ", "
+            fprintf $"%s{argument.LlvmType} %%%s{argument.Name}"
+        fprintfn " ) alignstack(16) nounwind"
+        fprintfn "{"
+        fprintfn "enter:"
+
+        if TypeId.isVoid func.ReturnType then
+            fprintf $"call %s{returnType} @%s{internalName} ( "
+        else
+            fprintf $"%%result = call %s{returnType} @%s{internalName} ( "
+
+        for argument in args do
+            if argument.Index > 0 then fprintf ", "
+            fprintf $"%s{argument.LlvmType} %%%s{argument.Name}"
+        fprintfn " )"
+
+        if TypeId.isVoid func.ReturnType then
+            fprintfn "ret void"
+        else
+            fprintfn $"ret %s{returnType} %%result"
+
+        fprintfn "}"
+    }
+
+    let writeExternWrapper (func: Function) : TypeCheckerM.M<SourceContext, unit> = tchecker {
+        let! context = context
+        let! arguments = getFunctionArgsInfo func context.CurrentSource
+        let internalName = getInternalName func.Name context.CurrentSource
+        let! returnType = type2llvmType { TypeId = func.ReturnType; Source = context.CurrentSource }
+
+        fprintf $"declare ccc %s{returnType} @%s{func.Name} ( "
+        for arg in arguments do
+            if arg.Index > 0 then fprintf ", "
+            fprintf $"%s{arg.LlvmType}"
+        fprintfn " ) nounwind"
+        fprintf "\n"
+
+        fprintf $"define private ccc %s{returnType} @%s{internalName} ( "
+        for arg in arguments do
+            if arg.Index > 0 then fprintf ", "
+            fprintf $"%s{arg.LlvmType} %%%s{arg.Name}"
+        fprintfn " ) alignstack(16) nounwind"
+        fprintfn "{"
+        fprintfn "enter:"
+
+        if TypeId.isVoid func.ReturnType then
+            fprintf $"call ccc %s{returnType} @%s{func.Name} ( "
+        else
+            fprintf $"%%result = call ccc %s{returnType} @%s{func.Name} ( "
+
+        for arg in arguments do
+            if arg.Index > 0 then fprintf ", "
+            fprintf $"%s{arg.LlvmType} %%%s{arg.Name}"
+        fprintfn ")"
+
+        if TypeId.isVoid func.ReturnType then
+            fprintfn "ret void"
+        else
+            fprintfn $"ret %s{returnType} %%result"
+
+        fprintfn "}"
+        fprintf "\n"
+    }
+
+    let writeFunction (func: Function) : TypeCheckerM.M<SourceContext, unit> = tchecker {
+        match func.Modifier with
+        | None ->
+            do! writeNativeFunction func
+            fprintf "\n"
+        | Some Modifier.Export ->
+            do! writeNativeFunction func
+            fprintf "\n"
+            do! writeExportWrapper func
+            fprintf "\n"
+        | Some Modifier.Extern ->
+            do! writeExternWrapper func
+            fprintf "\n"
+    }
+
+    let runm (m: TypeCheckerM.M<SourceContext, unit>) context =
+        match m context with
+        | Ok ((), []) -> ()
+        | Ok (_, diags)
+        | Error diags -> failwithf $"Error running typechecker context:\n%s{diags2Str diags}"
+
+    let makeContext source program =
+        match TypeChecker.makeContext source program with
+        | Ok context -> context
+        | Error diags -> failwithf $"Can't create type checker context:\n%s{diags2Str diags}"
+
+    interface ICodegenerator with
+
+        member _.Write () =
+            for source in program.Sources do
+                let context = makeContext source program
+                fprintfn $";;; Source '%s{source.Filename}'\n"
+                for func in getFunctionDeclarations source do
+                    runm (writeFunction func) context
+                fprintfn $";;; End of source '%s{source.Filename}'\n"
+
+            let strings =
+                program.Sources
+                |> Seq.ofList
+                |> Seq.collect getStringsFromSource
+                |> Seq.map (fun str -> (getStringLabel str, string2llvm str))
+                |> Seq.distinctBy fst
+                |> List.ofSeq
+
+            if not (List.isEmpty strings) then
+                fprintfn ";;; Strigns\n"
+                for label, hex in strings do
+                    fprintfn $"@%s{label} = private constant %s{hex}, align 16"
+                fprintf "\n"
+                fprintfn ";;; End of Strings \n"

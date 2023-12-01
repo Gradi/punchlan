@@ -14,6 +14,7 @@ open LibPunchLan.CodeGen
 
 type Backend =
     | Nasm
+    | LLVM
 
 type CommandLineArgs =
     | [<Mandatory; Unique; CustomCommandLine("-f")>] Input of string
@@ -120,21 +121,26 @@ let main argv =
 
             match typeCheckResult with
             | [] ->
-                match commandLine.GetResult (CommandLineArgs.Backend, Backend.Nasm) with
-                | Nasm ->
-                    use outputFilestream =
-                        match commandLine.GetResult Output with
-                        | "-" -> System.Console.OpenStandardOutput ()
-                        | name -> File.Open (name, FileMode.Create, FileAccess.Write)
-                    use bufferedStream = new BufferedStream (outputFilestream)
-                    use textWriter = new StreamWriter (bufferedStream)
-                    let callconv = commandLine.GetResult (CommandLineArgs.NasmCallConv, NasmCodegenerator.CallingConvention.MicrosoftX64)
-                    let codegen: ICodegenerator = NasmCodegenerator.NasmCodegenerator (textWriter, program, callconv)
-                    codegen.Write ()
-                    textWriter.Flush ()
-                    printStopwatch stopwatch "code generation"
-                    printStopwatch totalStopwatch "total time"
-                    0
+                use outputFilestream =
+                    match commandLine.GetResult Output with
+                    | "-" -> System.Console.OpenStandardOutput ()
+                    | name -> File.Open (name, FileMode.Create, FileAccess.Write)
+                use bufferedStream = new BufferedStream (outputFilestream)
+                use textWriter = new StreamWriter (bufferedStream)
+
+                let codegen: ICodegenerator =
+                    match commandLine.GetResult (CommandLineArgs.Backend, Backend.Nasm) with
+                    | Nasm ->
+                        let callconv = commandLine.GetResult (CommandLineArgs.NasmCallConv, NasmCodegenerator.CallingConvention.MicrosoftX64)
+                        NasmCodegenerator.NasmCodegenerator (textWriter, program, callconv)
+                    | LLVM ->
+                        LLVMCodegenerator.LLVMCodegenerator (textWriter, program)
+
+                codegen.Write ()
+                textWriter.Flush ()
+                printStopwatch stopwatch "code generation"
+                printStopwatch totalStopwatch "total time"
+                0
 
             | diags ->
                 eprintfn "There are some issues which needed to be solved before compilation:"
