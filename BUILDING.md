@@ -4,6 +4,7 @@ You will need:
 
 - [.NET 8](https://dot.net/)
 - [NASM](https://nasm.us)
+- [LLVM](https://llvm.org)
 - [PowerShell Core](https://microsoft.com/PowerShell) (Windows builtin should do as well)
 
 #### Steps
