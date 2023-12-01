@@ -6,7 +6,7 @@ I created it to learn more about compilers, languages, parsers. It is buggy. No 
 ### Pros
 
 - Static type checking (a bad one);
-- Compiles to a native code;
+- Compiles to a native code (thanks to [NASM](https://nasm.us) and [LLVM](https://llvm.org));
 - Written in F# to practice F# as well;
 - Fast compile times?
 - No comments;
@@ -17,6 +17,7 @@ I created it to learn more about compilers, languages, parsers. It is buggy. No 
 - No comments;
 - Still a lot of bugs;
 - It and it's programs run only on Windows; That is becase calling convention `System V x64 ABI` is not implemented.
+But LLVM's version should run on Linus too (not tested).
 
 Read [language](LANGUAGE.md) description to get better understanding about language.
 
