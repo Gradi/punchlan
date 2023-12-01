@@ -33,15 +33,6 @@ export func main (argc: int32, argv: pointer<const pointer<const char>>) : int32
         puts("Error: Can't open file")
         return 1
     fi
-    defer
-        puts("Closing file")
-        fclose (file)
-        puts ("Freeing memory")
-        free(cast(pointer<void>, shifts))
-        free(cast(pointer<void>, Ks))
-        free(cast(pointer<void>, buffer))
-    enddefer
-
 
     readSize = fread(cast(pointer<void>, buffer), cast(uint64, 1), bufferSize, file)
     while readSize == bufferSize do
@@ -110,11 +101,11 @@ func processChunk(buffer: pointer<uint8>)
             panic ("g out of bounds")
         fi
 
-        F = F + a + Ks[index] + words[cast(int64, g)]
+        F = cast(uint32, F + a + Ks[index] + words[cast(int64, g)])
         a = d
         d = c
         c = b
-        b = b + leftrotate(F, shifts[index])
+        b = cast(uint32, b + leftrotate(F, shifts[index]))
     endfor
 
     A = A + a
@@ -202,7 +193,7 @@ func initShifts ()
 endfunc
 
 func mod(value: uint32, mod: uint32) : uint32
-    var a : uint32 = value / mod
+    var a : uint32 = cast(uint32, value / mod)
     return value - (a * mod)
 endfunc
 

@@ -1,4 +1,2 @@
-md5.asm
-md5.exe
-md5.ilk
-md5.obj
+/objs/
+*.exe
