@@ -16,8 +16,8 @@ I created it to learn more about compilers, languages, parsers. It is buggy. No 
 - Bad, naive, unoptimized native code;
 - No comments;
 - Still a lot of bugs;
-- It and it's programs run only on Windows; That is becase calling convention `System V x64 ABI` is not implemented.
-But LLVM's version should run on Linus too (not tested).
+- It and it's programs run only on Windows; That is becase calling convention `System V x64 ABI` is not implemented,
+but LLVM's version should run on Linux (not tested).
 
 Read [language](LANGUAGE.md) description to get better understanding about language.
 
